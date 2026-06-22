@@ -43,7 +43,13 @@ const sqlite = new Database("data.db");
 // Select the SQLCipher cipher and apply the key BEFORE any other statement.
 sqlite.pragma("cipher='sqlcipher'");
 sqlite.pragma(`key='${DB_KEY.replace(/'/g, "''")}'`);
-sqlite.pragma("journal_mode = WAL");
+// Flush any pre-existing WAL data (from a DB inherited in WAL mode) into the
+// main data.db file before switching journal modes.
+sqlite.pragma("wal_checkpoint(TRUNCATE)");
+// Use DELETE mode so every committed transaction lands directly in data.db.
+// The deploy platform only snapshots data.db (not the -wal/-shm sidecars), so
+// WAL mode could lose recently committed data on redeploy.
+sqlite.pragma("journal_mode = DELETE");
 
 // Self-initialize the schema (idempotent) so a fresh encrypted database can be
 // created without drizzle-kit push, which cannot open an encrypted file.
