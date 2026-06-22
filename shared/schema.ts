@@ -114,6 +114,34 @@ export type InsertItemUnit = z.infer<typeof insertItemUnitSchema>;
 export type ItemUnit = typeof itemUnits.$inferSelect;
 
 /* ------------------------------------------------------------------ */
+/* Stock computation — single source of truth for on-hand / low-stock  */
+/* ------------------------------------------------------------------ */
+export type UnitCounts = { total: number; in_stock: number; issued: number; maintenance: number; retired: number };
+
+// Computed stock figures attached to each item in GET /api/items.
+export type ItemWithStock = Item & { unitCounts?: UnitCounts; onHand: number; lowStock: boolean };
+
+// On-hand (available) and low-stock are derived identically everywhere — the
+// items API, dashboard, inventory, and reports all call this so the figures
+// never diverge.
+//   - serialized item WITH tracked units (unitCounts.total > 0):
+//     onHand = in_stock units only (issued, maintenance, retired excluded).
+//   - otherwise (non-serialized, or serialized with no tracked units):
+//     onHand = item.quantity.
+//   - lowStock = parLevel > 0 && onHand <= parLevel (at or below par).
+export function computeStock(
+  item: Pick<Item, "type" | "quantity" | "parLevel">,
+  unitCounts?: UnitCounts | null,
+): { onHand: number; lowStock: boolean } {
+  const onHand =
+    item.type === "unique" && unitCounts && unitCounts.total > 0
+      ? unitCounts.in_stock
+      : item.quantity;
+  const lowStock = item.parLevel > 0 && onHand <= item.parLevel;
+  return { onHand, lowStock };
+}
+
+/* ------------------------------------------------------------------ */
 /* Assignments — current possession of issued items                    */
 /* ------------------------------------------------------------------ */
 // status: active | returned

@@ -35,7 +35,7 @@ import {
 } from "@/lib/item-fields";
 
 type UnitCounts = { total: number; in_stock: number; issued: number; maintenance: number; retired: number };
-type InvItem = Item & { unitCounts?: UnitCounts };
+type InvItem = Item & { unitCounts?: UnitCounts; onHand: number; lowStock: boolean };
 
 const blank = (): Partial<Item> => ({
   name: "", category: "", subcategory: "", type: "consumable", sku: "", serialNumber: "", size: "", color: "",
@@ -86,6 +86,8 @@ export default function Inventory() {
 
   const matchesStatus = (i: InvItem) => {
     if (status === "all") return true;
+    // Low-stock filter uses the API's computed lowStock (single source of truth).
+    if (status === "low_stock") return i.lowStock;
     // Serialized items match by their per-unit counts so e.g. the "Issued"
     // filter surfaces an item that has any issued unit, even if other units
     // are still in stock. Falls back to the item status when counts absent.
@@ -214,7 +216,7 @@ export default function Inventory() {
           <FilterSelect value={type} onChange={setType} placeholder="Type"
             options={[["consumable", "Consumable"], ["returnable", "Returnable"], ["unique", "Serialized"]]} />
           <FilterSelect value={status} onChange={setStatus} placeholder="Status"
-            options={[["in_stock", "In Stock"], ["issued", "Issued"], ["maintenance", "Maintenance"], ["retired", "Retired"]]} />
+            options={[["in_stock", "In Stock"], ["issued", "Issued"], ["maintenance", "Maintenance"], ["retired", "Retired"], ["low_stock", "Low Stock"]]} />
         </div>
       </Card>
 
@@ -494,10 +496,19 @@ const ITEM_SAMPLE_ROWS: Record<string, string>[] = [
   },
 ];
 
-function StockPill({ item }: { item: Item }) {
-  if (item.type === "unique") return <Pill tone="purple">Serialized</Pill>;
-  const low = item.parLevel > 0 && item.quantity <= item.parLevel;
-  return <Pill tone={low ? "amber" : "green"}>{item.quantity}{item.parLevel ? ` / PAR ${item.parLevel}` : ""}</Pill>;
+function StockPill({ item }: { item: InvItem }) {
+  // On-hand for serialized items excludes issued/maintenance/retired units, so a
+  // fully-issued serialized item correctly reads 0 and flags low stock here.
+  const onHand = item.onHand ?? item.quantity;
+  if (item.type === "unique") {
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <Pill tone="purple">Serialized</Pill>
+        <Pill tone={item.lowStock ? "amber" : "green"}>{onHand} on hand{item.parLevel ? ` / PAR ${item.parLevel}` : ""}</Pill>
+      </div>
+    );
+  }
+  return <Pill tone={item.lowStock ? "amber" : "green"}>{onHand}{item.parLevel ? ` / PAR ${item.parLevel}` : ""}</Pill>;
 }
 
 // Status display for inventory rows. Serialized items with tracked units show a

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import { fmtDate, fmtCurrency, relativeDays, daysUntil, exportCsv } from "@/lib/format";
-import type { Officer, Item, Assignment } from "@shared/schema";
+import type { Officer, Item, Assignment, ItemWithStock } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -11,7 +11,7 @@ import { Download } from "lucide-react";
 
 export default function Reports() {
   const { data: officers } = useQuery<Officer[]>({ queryKey: ["/api/officers"] });
-  const { data: items } = useQuery<Item[]>({ queryKey: ["/api/items"] });
+  const { data: items } = useQuery<ItemWithStock[]>({ queryKey: ["/api/items"] });
   const { data: assignments } = useQuery<Assignment[]>({ queryKey: ["/api/assignments"] });
 
   const itemOf = (id: number) => items?.find((i) => i.id === id);
@@ -34,7 +34,7 @@ export default function Reports() {
   );
   const selectedOfficer = issuedOfficers.find((o) => String(o.id) === issuedOfficerFilter);
   const overdue = active.filter((a) => a.dueDate && new Date(a.dueDate) < new Date());
-  const lowStock = (items ?? []).filter((i) => i.type !== "unique" && i.parLevel > 0 && i.quantity <= i.parLevel);
+  const lowStock = (items ?? []).filter((i) => i.lowStock);
   const expiring = (items ?? []).filter((i) => { const d = daysUntil(i.expirationDate); return d !== null && d <= 90; });
 
   const byCategory = useMemo(() => {
@@ -105,11 +105,11 @@ export default function Reports() {
         {/* Reorder */}
         <TabsContent value="reorder" className="mt-4">
           <ReportShell title="Reorder List (at/below PAR)" onExport={() => exportCsv("reorder.csv", lowStock.map((i) => ({
-            Item: i.name, OnHand: i.quantity, PAR: i.parLevel, Suggested: Math.max(i.parLevel * 2 - i.quantity, i.parLevel), Vendor: i.vendor, UnitCost: i.unitCost,
+            Item: i.name, OnHand: i.onHand, PAR: i.parLevel, Suggested: Math.max(i.parLevel - i.onHand, 0), Vendor: i.vendor, UnitCost: i.unitCost,
           })))}>
             {lowStock.length === 0 ? <EmptyState title="Stock levels healthy" /> : (
-              <SimpleTable head={["Item", "On Hand", "PAR", "Suggested Order", "Vendor"]}
-                rows={lowStock.map((i) => [i.name, <Pill tone="amber">{i.quantity}</Pill>, String(i.parLevel), String(Math.max(i.parLevel * 2 - i.quantity, i.parLevel)), i.vendor ?? "—"])} />
+              <SimpleTable head={["Item", "On Hand", "PAR", "Reorder Qty", "Vendor"]}
+                rows={lowStock.map((i) => [i.name, <Pill tone="amber">{i.onHand}</Pill>, String(i.parLevel), String(Math.max(i.parLevel - i.onHand, 0)), i.vendor ?? "—"])} />
             )}
           </ReportShell>
         </TabsContent>

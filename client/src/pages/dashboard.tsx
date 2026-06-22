@@ -9,7 +9,7 @@ import {
   Package, Users, ArrowLeftRight, AlertTriangle, Clock, CalendarX2, Wrench, DollarSign,
 } from "lucide-react";
 
-interface Item { id: number; name: string; quantity: number; parLevel: number; expirationDate?: string | null; location?: string | null; }
+interface Item { id: number; name: string; quantity: number; parLevel: number; onHand?: number; expirationDate?: string | null; location?: string | null; }
 interface Dash {
   counts: Record<string, number>;
   lowStock: Item[];
@@ -83,7 +83,7 @@ export default function Dashboard() {
               {data.lowStock.map((i) => (
                 <li key={i.id} className="flex items-center justify-between py-2 text-sm">
                   <span className="truncate">{i.name}</span>
-                  <Pill tone="amber">{i.quantity} / PAR {i.parLevel}</Pill>
+                  <Pill tone="amber">{i.onHand ?? i.quantity} / PAR {i.parLevel}</Pill>
                 </li>
               ))}
             </ul>

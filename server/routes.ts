@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import { storage } from "./storage";
 import {
   insertOfficerSchema, insertItemSchema, insertUserSchema,
-  insertKitSchema,
+  insertKitSchema, computeStock,
 } from "@shared/schema";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -176,12 +176,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const list = await storage.listItems();
     const counts = await storage.unitStatusCountsByItem();
     // Attach per-unit status counts to serialized items so the UI can show a
-    // breakdown (e.g. "1 In Stock" + "1 Issued") and filter accurately.
-    const out = list.map((i) =>
-      i.type === "unique"
-        ? { ...i, unitCounts: counts[i.id] ?? { total: 0, in_stock: 0, issued: 0, maintenance: 0, retired: 0 } }
-        : i,
-    );
+    // breakdown (e.g. "1 In Stock" + "1 Issued") and filter accurately, plus
+    // computed onHand/lowStock (single source of truth — see computeStock).
+    const out = list.map((i) => {
+      const unitCounts = i.type === "unique"
+        ? counts[i.id] ?? { total: 0, in_stock: 0, issued: 0, maintenance: 0, retired: 0 }
+        : undefined;
+      const { onHand, lowStock } = computeStock(i, unitCounts);
+      return unitCounts ? { ...i, unitCounts, onHand, lowStock } : { ...i, onHand, lowStock };
+    });
     res.json(out);
   });
   app.get("/api/items/:id", async (req, res) => {
@@ -523,7 +526,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const today = new Date();
     const in90 = new Date(); in90.setDate(today.getDate() + 90);
 
-    const lowStock = allItems.filter(i => i.type !== "unique" && i.quantity <= i.parLevel && i.parLevel > 0);
+    const counts = await storage.unitStatusCountsByItem();
+    const withStock = allItems.map(i => {
+      const uc = i.type === "unique" ? counts[i.id] : undefined;
+      return { ...i, ...computeStock(i, uc) };
+    });
+    const lowStock = withStock.filter(i => i.lowStock);
     const expiring = allItems.filter(i => i.expirationDate && new Date(i.expirationDate) <= in90);
     const expired = allItems.filter(i => i.expirationDate && new Date(i.expirationDate) < today);
     const overdue = active.filter(a => a.dueDate && new Date(a.dueDate) < today);
