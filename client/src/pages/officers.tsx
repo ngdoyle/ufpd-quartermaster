@@ -1,0 +1,355 @@
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useApp, can } from "@/lib/app-context";
+import { PageHeader, Pill, StatusBadge, EmptyState } from "@/components/bits";
+import { fmtDate, relativeDays, exportCsv } from "@/lib/format";
+import type { Officer, Item, Assignment, ItemUnit } from "@shared/schema";
+import { isDualSerialItem } from "@/components/serial-units-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useToast } from "@/hooks/use-toast";
+import { Plus, Search, Pencil, Download, Upload, Shirt, Mail, Phone, Package } from "lucide-react";
+import { MultiSelect } from "@/components/multi-select";
+import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
+import { RANKS, UNITS, parseUnits, joinUnits, UNIT_CSV_SEPARATOR } from "@/lib/constants";
+const blank = (): Partial<Officer> => ({
+  badgeNumber: "", firstName: "", lastName: "", rank: "Officer", unit: "", email: "", phone: "",
+  status: "active", hireDate: "", shirtSize: "", pantsSize: "", jacketSize: "", shoeSize: "",
+  vestSize: "", hatSize: "", gloveSize: "", notes: "",
+});
+
+export default function Officers() {
+  const { user } = useApp();
+  const { toast } = useToast();
+  const editable = can.manageOfficers(user?.role);
+  const { data: officers, isLoading } = useQuery<Officer[]>({ queryKey: ["/api/officers"] });
+  const { data: items } = useQuery<Item[]>({ queryKey: ["/api/items"] });
+  const { data: assignments } = useQuery<Assignment[]>({ queryKey: ["/api/assignments"] });
+
+  const [q, setQ] = useState("");
+  const [form, setForm] = useState<Partial<Officer> | null>(null);
+  const [detail, setDetail] = useState<Officer | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    if (!officers) return [];
+    const t = q.toLowerCase();
+    return officers.filter((o) => !t || [o.firstName, o.lastName, o.badgeNumber, o.unit, o.rank].some((f) => f?.toLowerCase().includes(t)));
+  }, [officers, q]);
+
+  const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
+  const itemById = (id: number) => items?.find((i) => i.id === id);
+  const activeFor = (officerId: number) => (assignments ?? []).filter((a) => a.officerId === officerId && a.status === "active");
+
+  async function save() {
+    if (!form?.firstName || !form?.lastName || !form?.badgeNumber)
+      return toast({ title: "Name and badge number are required", variant: "destructive" });
+    setSaving(true);
+    try {
+      const payload = { ...form, actor: user?.name };
+      if (form.id) await apiRequest("PATCH", `/api/officers/${form.id}`, payload);
+      else await apiRequest("POST", "/api/officers", payload);
+      queryClient.invalidateQueries({ queryKey: ["/api/officers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      toast({ title: form.id ? "Officer updated" : "Officer added" });
+      setForm(null);
+    } catch (e: any) {
+      toast({ title: "Save failed", description: e.message, variant: "destructive" });
+    } finally { setSaving(false); }
+  }
+
+  function doExport() {
+    exportCsv("personnel.csv", filtered.map((o) => ({
+      Badge: o.badgeNumber, Last: o.lastName, First: o.firstName, Rank: o.rank, Unit: o.unit,
+      Email: o.email, Phone: o.phone, Status: o.status, Shirt: o.shirtSize, Pants: o.pantsSize,
+      Jacket: o.jacketSize, Shoe: o.shoeSize, Vest: o.vestSize, Hat: o.hatSize, Glove: o.gloveSize,
+    })));
+  }
+
+  return (
+    <div>
+      <PageHeader title="Personnel Roster" subtitle={`${officers?.length ?? 0} officers`}
+        actions={<>
+          <Button variant="outline" size="sm" onClick={doExport} data-testid="button-export-officers"><Download className="mr-1.5 h-4 w-4" /> Export CSV</Button>
+          {editable && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} data-testid="button-import-officers"><Upload className="mr-1.5 h-4 w-4" /> Bulk Import</Button>}
+          {editable && <Button size="sm" onClick={() => setForm(blank())} data-testid="button-add-officer"><Plus className="mr-1.5 h-4 w-4" /> Add Officer</Button>}
+        </>} />
+
+      <Card className="mb-4 p-3">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input className="pl-8" placeholder="Search by name, badge, unit…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="input-search-officers" />
+        </div>
+      </Card>
+
+      {isLoading ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>
+      ) : filtered.length === 0 ? (
+        <EmptyState title="No officers found" />
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((o) => {
+            const issued = activeFor(o.id);
+            return (
+              <Card key={o.id} className="p-4 cursor-pointer hover-elevate" onClick={() => setDetail(o)} data-testid={`card-officer-${o.id}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary text-sm font-semibold">
+                      {o.firstName[0]}{o.lastName[0]}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-medium leading-tight truncate">{o.firstName} {o.lastName}</p>
+                      <p className="text-xs text-muted-foreground">#{o.badgeNumber} · {o.rank}</p>
+                    </div>
+                  </div>
+                  <StatusBadge status={o.status} />
+                </div>
+                <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{o.unit || "—"}</span>
+                  <Pill tone={issued.length ? "blue" : "gray"}>{issued.length} items issued</Pill>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Detail sheet */}
+      <Sheet open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          {detail && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="flex items-center gap-3">
+                  <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/12 text-primary text-base font-semibold">
+                    {detail.firstName[0]}{detail.lastName[0]}
+                  </span>
+                  <span>
+                    <span className="block">{detail.firstName} {detail.lastName}</span>
+                    <span className="block text-xs font-normal text-muted-foreground">#{detail.badgeNumber} · {detail.rank} · {detail.unit}</span>
+                  </span>
+                </SheetTitle>
+              </SheetHeader>
+
+              <div className="mt-5 space-y-5">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  {detail.email && <a href={`mailto:${detail.email}`} className="flex items-center gap-2 text-primary"><Mail className="h-4 w-4" />{detail.email}</a>}
+                  {detail.phone && <span className="flex items-center gap-2 text-muted-foreground"><Phone className="h-4 w-4" />{detail.phone}</span>}
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Hire date</span><span>{fmtDate(detail.hireDate)}</span>
+                </div>
+
+                {/* Sizing */}
+                <div>
+                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><Shirt className="h-4 w-4 text-primary" /> Uniform & Gear Sizing</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([["Shirt", detail.shirtSize], ["Pants", detail.pantsSize], ["Jacket", detail.jacketSize],
+                       ["Shoe", detail.shoeSize], ["Vest", detail.vestSize], ["Hat", detail.hatSize],
+                       ["Glove", detail.gloveSize]] as [string, string | null][]).map(([k, v]) => (
+                      <div key={k} className="rounded-md border border-border bg-muted/40 p-2 text-center">
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{k}</div>
+                        <div className="text-sm font-medium">{v || "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Issued items */}
+                <div>
+                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><Package className="h-4 w-4 text-primary" /> Currently Issued</div>
+                  {activeFor(detail.id).length === 0 ? <EmptyState title="No items issued" /> : (
+                    <ul className="divide-y divide-border rounded-md border border-border">
+                      {activeFor(detail.id).map((a) => {
+                        const overdue = a.dueDate && new Date(a.dueDate) < new Date();
+                        const it = itemById(a.itemId);
+                        return (
+                          <li key={a.id} className="px-3 py-2 text-sm">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate">{a.quantity}× {itemName(a.itemId)}</span>
+                              {a.dueDate ? <Pill tone={overdue ? "red" : "gray"}>{relativeDays(a.dueDate)}</Pill> : <Pill tone="gray">no due date</Pill>}
+                            </div>
+                            {it?.type === "unique" && (
+                              <AssignmentUnitControl assignment={a} item={it} editable={editable} actor={user?.name} />
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                {detail.notes && <div className="rounded-md bg-muted/40 p-3 text-sm"><span className="text-muted-foreground">Notes: </span>{detail.notes}</div>}
+
+                {editable && <Button className="w-full" onClick={() => { setForm(detail); setDetail(null); }}><Pencil className="mr-1.5 h-4 w-4" /> Edit Officer</Button>}
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Add/edit dialog */}
+      <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{form?.id ? "Edit Officer" : "Add Officer"}</DialogTitle>
+            <DialogDescription>Personnel profile including uniform and gear sizing.</DialogDescription>
+          </DialogHeader>
+          {form && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Badge #"><Input value={form.badgeNumber ?? ""} onChange={(e) => setForm({ ...form, badgeNumber: e.target.value })} data-testid="input-badge" /></Field>
+              <Field label="Status">
+                <Select value={form.status ?? "active"} onValueChange={(v) => setForm({ ...form, status: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+                </Select>
+              </Field>
+              <Field label="First name"><Input value={form.firstName ?? ""} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-first" /></Field>
+              <Field label="Last name"><Input value={form.lastName ?? ""} onChange={(e) => setForm({ ...form, lastName: e.target.value })} data-testid="input-last" /></Field>
+              <Field label="Rank">
+                <Select value={form.rank ?? "Officer"} onValueChange={(v) => setForm({ ...form, rank: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{RANKS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
+                </Select>
+              </Field>
+              <Field label="Unit"><MultiSelect options={UNITS} value={parseUnits(form.unit)} onChange={(units) => setForm({ ...form, unit: joinUnits(units) })} placeholder="Select units…" testId="unit" /></Field>
+              <Field label="Email"><Input value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
+              <Field label="Phone"><Input value={form.phone ?? ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+              <Field label="Hire date"><Input type="date" value={(form.hireDate ?? "").slice(0, 10)} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} /></Field>
+              <div className="sm:col-span-2 mt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sizing</div>
+              <Field label="Shirt"><Input value={form.shirtSize ?? ""} onChange={(e) => setForm({ ...form, shirtSize: e.target.value })} /></Field>
+              <Field label="Pants"><Input value={form.pantsSize ?? ""} onChange={(e) => setForm({ ...form, pantsSize: e.target.value })} /></Field>
+              <Field label="Jacket"><Input value={form.jacketSize ?? ""} onChange={(e) => setForm({ ...form, jacketSize: e.target.value })} /></Field>
+              <Field label="Shoe"><Input value={form.shoeSize ?? ""} onChange={(e) => setForm({ ...form, shoeSize: e.target.value })} /></Field>
+              <Field label="Vest"><Input value={form.vestSize ?? ""} onChange={(e) => setForm({ ...form, vestSize: e.target.value })} /></Field>
+              <Field label="Hat"><Input value={form.hatSize ?? ""} onChange={(e) => setForm({ ...form, hatSize: e.target.value })} /></Field>
+              <Field label="Glove"><Input value={form.gloveSize ?? ""} onChange={(e) => setForm({ ...form, gloveSize: e.target.value })} /></Field>
+              <Field className="sm:col-span-2" label="Notes"><Textarea rows={2} value={form.notes ?? ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setForm(null)}>Cancel</Button>
+            <Button onClick={save} disabled={saving} data-testid="button-save-officer">{saving ? "Saving…" : "Save"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk import */}
+      <BulkImport
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="Bulk Import Personnel"
+        endpoint="/api/officers/bulk"
+        templateFilename="personnel-import-template.csv"
+        actor={user?.name}
+        instructions={`Required: Badge, First, Last. Rank must be one of the standard ranks. List one or more Units separated by a semicolon (;) inside the Unit cell, e.g. "Team 1 Days; Traffic". Status is active or inactive.`}
+        invalidateKeys={["/api/officers"]}
+        columns={OFFICER_COLUMNS}
+        mapRow={(r) => ({
+          badgeNumber: (r["Badge"] ?? "").trim(),
+          firstName: (r["First"] ?? "").trim(),
+          lastName: (r["Last"] ?? "").trim(),
+          rank: (r["Rank"] ?? "").trim(),
+          unit: joinUnits(parseUnits(r["Unit"] ?? "")),
+          email: (r["Email"] ?? "").trim(),
+          phone: (r["Phone"] ?? "").trim(),
+          status: ((r["Status"] ?? "active").trim().toLowerCase() === "inactive") ? "inactive" : "active",
+          hireDate: (r["Hire Date"] ?? "").trim(),
+          shirtSize: (r["Shirt"] ?? "").trim(),
+          pantsSize: (r["Pants"] ?? "").trim(),
+          jacketSize: (r["Jacket"] ?? "").trim(),
+          shoeSize: (r["Shoe"] ?? "").trim(),
+          vestSize: (r["Vest"] ?? "").trim(),
+          hatSize: (r["Hat"] ?? "").trim(),
+          gloveSize: (r["Glove"] ?? "").trim(),
+          notes: (r["Notes"] ?? "").trim(),
+        })}
+      />
+    </div>
+  );
+}
+
+const OFFICER_COLUMNS: ColumnSpec[] = [
+  { header: "Badge", example: "2001" },
+  { header: "First", example: "Jordan" },
+  { header: "Last", example: "Reyes" },
+  { header: "Rank", example: "Officer" },
+  { header: "Unit", example: `Team 1 Days${UNIT_CSV_SEPARATOR} Traffic`, note: "Separate multiple units with a semicolon" },
+  { header: "Email", example: "j.reyes@ufpd.ufl.edu" },
+  { header: "Phone", example: "352-555-0199" },
+  { header: "Status", example: "active" },
+  { header: "Hire Date", example: "2024-01-15" },
+  { header: "Shirt", example: "L" },
+  { header: "Pants", example: "34x32" },
+  { header: "Jacket", example: "L" },
+  { header: "Shoe", example: "11" },
+  { header: "Vest", example: "Medium" },
+  { header: "Hat", example: "7 1/4" },
+  { header: "Glove", example: "L" },
+  { header: "Notes", example: "" },
+];
+
+function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+  return <div className={className}><Label className="mb-1.5 block text-xs">{label}</Label>{children}</div>;
+}
+
+// Per-assignment serial picker shown in the officer detail sheet. Lets an
+// admin/quartermaster set or replace the serialized unit tied to an active
+// assignment after it was issued (PATCH /api/assignments/:id/unit).
+function AssignmentUnitControl({ assignment, item, editable, actor }: { assignment: Assignment; item: Item; editable: boolean; actor?: string }) {
+  const { toast } = useToast();
+  const { data: units } = useQuery<ItemUnit[]>({ queryKey: ["/api/items", item.id, "units"] });
+  const [saving, setSaving] = useState(false);
+  const label = (u: ItemUnit) => (u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber);
+  const current = (units ?? []).find((u) => u.id === assignment.itemUnitId);
+  // Units this assignment can switch to: in-stock ones plus the currently held unit.
+  const selectable = (units ?? []).filter((u) => u.status === "in_stock" || u.id === assignment.itemUnitId);
+
+  async function change(unitId: string) {
+    if (Number(unitId) === assignment.itemUnitId) return;
+    setSaving(true);
+    try {
+      await apiRequest("PATCH", `/api/assignments/${assignment.id}/unit`, { itemUnitId: Number(unitId), actor });
+      ["/api/assignments", "/api/items"].forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
+      queryClient.invalidateQueries({ queryKey: ["/api/items", item.id, "units"] });
+      toast({ title: "Serial updated" });
+    } catch (e: any) {
+      toast({ title: "Could not update serial", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    } finally { setSaving(false); }
+  }
+
+  if (!editable) {
+    return (
+      <div className="mt-1 text-xs text-muted-foreground">
+        Serial: {current ? label(current) : <span className="italic">none assigned</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 flex items-center gap-2">
+      <span className="shrink-0 text-xs text-muted-foreground">{isDualSerialItem(item) ? "Panel serials" : "Serial"}</span>
+      <Select value={assignment.itemUnitId ? String(assignment.itemUnitId) : ""} onValueChange={change} disabled={saving}>
+        <SelectTrigger className="h-8 text-xs" data-testid={`select-assignment-unit-${assignment.id}`}>
+          <SelectValue placeholder="Assign a serial…" />
+        </SelectTrigger>
+        <SelectContent>
+          {selectable.length === 0 ? (
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">No units available</div>
+          ) : (
+            selectable.map((u) => <SelectItem key={u.id} value={String(u.id)}>{label(u)}</SelectItem>)
+          )}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}

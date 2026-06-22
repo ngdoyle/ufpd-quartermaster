@@ -1,0 +1,129 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useApp, roleLabel, Role } from "@/lib/app-context";
+import { PageHeader, Pill, EmptyState } from "@/components/bits";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
+import { Plus, ShieldCheck, Trash2 } from "lucide-react";
+
+const ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
+const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", supervisor: "purple", officer: "gray", auditor: "amber" };
+
+export default function Users() {
+  const { user } = useApp();
+  const { toast } = useToast();
+  const { data: users, isLoading } = useQuery<any[]>({ queryKey: ["/api/users"] });
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ username: "", name: "", role: "officer" as Role, password: "", mustChangePassword: true });
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!form.username || !form.name || !form.password) return toast({ title: "All fields required", variant: "destructive" });
+    setSaving(true);
+    try {
+      await apiRequest("POST", "/api/users", { ...form, active: true, officerId: null, actor: user?.name });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: "Account created" });
+      setCreating(false); setForm({ username: "", name: "", role: "officer", password: "", mustChangePassword: true });
+    } catch (e: any) {
+      toast({ title: "Failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    } finally { setSaving(false); }
+  }
+
+  async function toggleActive(u: any) {
+    await apiRequest("PATCH", `/api/users/${u.id}`, { active: !u.active, actor: user?.name });
+    queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+  }
+
+  async function remove(id: number) {
+    await apiRequest("DELETE", `/api/users/${id}?actor=${encodeURIComponent(user?.name ?? "")}`);
+    queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+    toast({ title: "Account deleted" });
+  }
+
+  return (
+    <div>
+      <PageHeader title="User Accounts" subtitle="Manage who can sign in and what they can do"
+        actions={<Button size="sm" onClick={() => setCreating(true)} data-testid="button-add-user"><Plus className="mr-1.5 h-4 w-4" /> Add Account</Button>} />
+
+      {isLoading ? (
+        <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
+      ) : !users?.length ? <EmptyState title="No accounts" /> : (
+        <Card className="overflow-hidden">
+          <ul className="divide-y divide-border">
+            {users.map((u) => (
+              <li key={u.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3" data-testid={`row-user-${u.id}`}>
+                <div className="flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/12 text-primary"><ShieldCheck className="h-5 w-5" /></span>
+                  <div>
+                    <p className="font-medium leading-tight">{u.name} {u.id === user?.id && <span className="text-xs text-muted-foreground">(you)</span>}</p>
+                    <p className="text-xs text-muted-foreground">{u.username}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Pill tone={roleTone[u.role]}>{roleLabel[u.role as Role]}</Pill>
+                  <Pill tone={u.active ? "green" : "gray"}>{u.active ? "Active" : "Disabled"}</Pill>
+                  {u.id !== user?.id && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => toggleActive(u)} data-testid={`button-toggle-${u.id}`}>{u.active ? "Disable" : "Enable"}</Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild><Button variant="ghost" size="icon" data-testid={`button-delete-user-${u.id}`}><Trash2 className="h-4 w-4 text-destructive" /></Button></AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader><AlertDialogTitle>Delete {u.username}?</AlertDialogTitle><AlertDialogDescription>This permanently removes the account.</AlertDialogDescription></AlertDialogHeader>
+                          <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => remove(u.id)}>Delete</AlertDialogAction></AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>New Account</DialogTitle><DialogDescription>Create a sign-in account and assign a role.</DialogDescription></DialogHeader>
+          <div className="grid gap-3">
+            <div className="space-y-1.5"><Label>Full name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-user-name" /></div>
+            <div className="space-y-1.5"><Label>Username</Label><Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} data-testid="input-user-username" /></div>
+            <div className="space-y-1.5"><Label>Temporary password</Label><Input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} data-testid="input-user-password" /></div>
+            <div className="space-y-1.5">
+              <Label>Role</Label>
+              <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v as Role })}>
+                <SelectTrigger data-testid="select-role"><SelectValue /></SelectTrigger>
+                <SelectContent>{ROLES.map((r) => <SelectItem key={r} value={r}>{roleLabel[r]}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox checked={form.mustChangePassword} onCheckedChange={(v) => setForm({ ...form, mustChangePassword: !!v })} />
+              Require password change at first sign-in
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
+            <Button onClick={save} disabled={saving} data-testid="button-save-user">{saving ? "Saving…" : "Create"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <p className="mt-4 text-xs text-muted-foreground max-w-2xl">
+        Role permissions — <strong>Administrator</strong>: full access incl. accounts. <strong>Quartermaster</strong>: manage inventory, personnel, issue/return.
+        <strong> Supervisor</strong>: view reports & activity. <strong>Auditor</strong>: read-only with full activity log. <strong>Officer</strong>: self-service.
+      </p>
+    </div>
+  );
+}

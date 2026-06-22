@@ -1,0 +1,52 @@
+export function fmtDate(d?: string | null) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return "—";
+  return dt.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+
+export function fmtDateTime(d?: string | null) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return "—";
+  return dt.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+export function fmtCurrency(n?: number | null) {
+  return (n ?? 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+export function daysUntil(d?: string | null): number | null {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return null;
+  return Math.ceil((dt.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+}
+
+export function relativeDays(d?: string | null): string {
+  const n = daysUntil(d);
+  if (n === null) return "—";
+  if (n < 0) return `${Math.abs(n)}d overdue`;
+  if (n === 0) return "today";
+  return `in ${n}d`;
+}
+
+/** Build a CSV string and trigger a browser download (works in sandboxed iframe via Blob). */
+export function exportCsv(filename: string, rows: Record<string, any>[]) {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const esc = (v: any) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [headers.join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
