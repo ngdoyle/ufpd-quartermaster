@@ -165,9 +165,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     await audit("update_officer", "officer", o.id, `Updated officer ${o.firstName} ${o.lastName}`, req.body.actor);
     res.json(o);
   });
-  app.delete("/api/officers/:id", writeGuard, async (req, res) => {
-    await storage.deleteOfficer(Number(req.params.id));
-    await audit("delete_officer", "officer", Number(req.params.id), `Removed officer #${req.params.id}`, req.query.actor as string);
+  app.delete("/api/officers/:id", adminGuard, async (req, res) => {
+    const id = Number(req.params.id);
+    const officer = await storage.getOfficer(id);
+    if (!officer) return res.status(404).json({ message: "Not found" });
+    const officerAssignments = await storage.listAssignmentsByOfficer(id);
+    if (officerAssignments.some((a) => a.status === "active"))
+      return res.status(409).json({ message: "Cannot delete: officer has items currently issued. Return all items first." });
+    await storage.deleteAssignmentsByOfficer(id);
+    await storage.deleteOfficer(id);
+    await audit("delete_officer", "officer", id, `Deleted officer ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber}) and purged their assignment history`, req.query.actor as string);
     res.json({ ok: true });
   });
 

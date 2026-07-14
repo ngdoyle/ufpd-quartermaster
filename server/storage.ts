@@ -225,8 +225,10 @@ export interface IStorage {
   listAssignments(): Promise<Assignment[]>;
   listActiveAssignments(): Promise<Assignment[]>;
   getAssignment(id: number): Promise<Assignment | undefined>;
+  listAssignmentsByOfficer(officerId: number): Promise<Assignment[]>;
   createAssignment(a: InsertAssignment): Promise<Assignment>;
   updateAssignment(id: number, a: Partial<InsertAssignment>): Promise<Assignment | undefined>;
+  deleteAssignmentsByOfficer(officerId: number): Promise<void>;
   // kits
   listKits(): Promise<Kit[]>;
   createKit(k: InsertKit): Promise<Kit>;
@@ -359,11 +361,17 @@ export class DatabaseStorage implements IStorage {
   async getAssignment(id: number) {
     return db.select().from(assignments).where(eq(assignments.id, id)).get();
   }
+  async listAssignmentsByOfficer(officerId: number) {
+    return db.select().from(assignments).where(eq(assignments.officerId, officerId)).all();
+  }
   async createAssignment(a: InsertAssignment) {
     return db.insert(assignments).values(a).returning().get();
   }
   async updateAssignment(id: number, a: Partial<InsertAssignment>) {
     return db.update(assignments).set(a).where(eq(assignments.id, id)).returning().get();
+  }
+  async deleteAssignmentsByOfficer(officerId: number) {
+    db.delete(assignments).where(eq(assignments.officerId, officerId)).run();
   }
 
   // ---- kits ----

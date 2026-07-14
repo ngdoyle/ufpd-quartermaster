@@ -6,6 +6,7 @@ import { PageHeader, Pill, TypeBadge, EmptyState } from "@/components/bits";
 import { fmtDate, fmtDateTime, relativeDays } from "@/lib/format";
 import type { Officer, Item, Assignment, ItemUnit } from "@shared/schema";
 import { isDualSerialItem } from "@/components/serial-units-dialog";
+import { ITEM_CATEGORIES, ITEM_SUBCATEGORIES } from "@/lib/item-fields";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +28,8 @@ export default function IssueReturn() {
 
   // issue form state
   const [officerId, setOfficerId] = useState("");
+  const [issueCategory, setIssueCategory] = useState("");
+  const [issueSubcategory, setIssueSubcategory] = useState("");
   const [itemId, setItemId] = useState("");
   const [unitId, setUnitId] = useState("");
   const [qty, setQty] = useState(1);
@@ -44,6 +47,41 @@ export default function IssueReturn() {
   const [q, setQ] = useState("");
 
   const availableItems = useMemo(() => (items ?? []).filter((i) => i.status !== "retired" && i.status !== "maintenance" && i.quantity > 0), [items]);
+  // Cascade derivations are driven by the ACTUAL item data (categories are
+  // free-form and mostly arrive via CSV import), not the hardcoded constants.
+  // Canonical values from ITEM_CATEGORIES/ITEM_SUBCATEGORIES sort first (in
+  // their defined order); any extras follow alphabetically. NO_CATEGORY is a
+  // sentinel bucket for items with an empty/null category.
+  const NO_CATEGORY = "__none__";
+  const matchesCategory = (i: Item, cat: string) => cat === NO_CATEGORY ? !i.category : i.category === cat;
+  const availableCategories = useMemo(() => {
+    const present = new Set<string>();
+    let hasUncategorized = false;
+    for (const i of availableItems) {
+      if (i.category) present.add(i.category);
+      else hasUncategorized = true;
+    }
+    const canonical = ITEM_CATEGORIES.filter((c) => present.has(c));
+    const extras = Array.from(present).filter((c) => !(ITEM_CATEGORIES as readonly string[]).includes(c)).sort((a, b) => a.localeCompare(b));
+    const out = [...canonical, ...extras];
+    if (hasUncategorized) out.push(NO_CATEGORY);
+    return out;
+  }, [availableItems]);
+  const availableSubcategories = useMemo(() => {
+    if (!issueCategory) return [];
+    const present = new Set<string>();
+    for (const i of availableItems) if (matchesCategory(i, issueCategory) && i.subcategory) present.add(i.subcategory);
+    const canon = ITEM_SUBCATEGORIES[issueCategory] ?? [];
+    const canonical = canon.filter((s) => present.has(s));
+    const extras = Array.from(present).filter((s) => !canon.includes(s)).sort((a, b) => a.localeCompare(b));
+    return [...canonical, ...extras];
+  }, [availableItems, issueCategory]);
+  const filteredItems = useMemo(
+    () => availableItems.filter((i) =>
+      matchesCategory(i, issueCategory) &&
+      (issueSubcategory === "" || issueSubcategory === "all" || i.subcategory === issueSubcategory)),
+    [availableItems, issueCategory, issueSubcategory],
+  );
   const selectedItem = items?.find((i) => String(i.id) === itemId);
   const isUnique = selectedItem?.type === "unique";
   const { data: selectedUnits } = useQuery<ItemUnit[]>({
@@ -79,7 +117,7 @@ export default function IssueReturn() {
       invalidateAll();
       queryClient.invalidateQueries({ queryKey: ["/api/items", Number(itemId), "units"] });
       toast({ title: "Item issued", description: `${qty}× ${selectedItem?.name}` });
-      setItemId(""); setUnitId(""); setQty(1); setDueDate(""); setSignature(""); setNotes("");
+      setIssueCategory(""); setIssueSubcategory(""); setItemId(""); setUnitId(""); setQty(1); setDueDate(""); setSignature(""); setNotes("");
     } catch (e: any) {
       toast({ title: "Issue failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
     } finally { setIssuing(false); }
@@ -130,10 +168,27 @@ export default function IssueReturn() {
 
               <div className="space-y-1.5">
                 <Label>Item</Label>
-                <Select value={itemId} onValueChange={(v) => { setItemId(v); setUnitId(""); setQty(1); }}>
-                  <SelectTrigger data-testid="select-item"><SelectValue placeholder="Select item in stock…" /></SelectTrigger>
+                <div className="grid grid-cols-2 gap-2">
+                  <Select value={issueCategory} onValueChange={(v) => { setIssueCategory(v); setIssueSubcategory(""); setItemId(""); setUnitId(""); setQty(1); }}>
+                    <SelectTrigger data-testid="select-issue-category"><SelectValue placeholder="Category…" /></SelectTrigger>
+                    <SelectContent>
+                      {availableCategories.map((c) => <SelectItem key={c} value={c}>{c === NO_CATEGORY ? "Uncategorized" : c}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {issueCategory && availableSubcategories.length > 0 && (
+                    <Select value={issueSubcategory} onValueChange={(v) => { setIssueSubcategory(v); setItemId(""); setUnitId(""); setQty(1); }}>
+                      <SelectTrigger data-testid="select-issue-subcategory"><SelectValue placeholder="Subcategory…" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        {availableSubcategories.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+                <Select value={itemId} onValueChange={(v) => { setItemId(v); setUnitId(""); setQty(1); }} disabled={!issueCategory}>
+                  <SelectTrigger data-testid="select-item"><SelectValue placeholder={issueCategory ? "Select item in stock…" : "Select category first…"} /></SelectTrigger>
                   <SelectContent>
-                    {availableItems.map((i) => (
+                    {filteredItems.map((i) => (
                       <SelectItem key={i.id} value={String(i.id)}>
                         {i.name}{i.size ? ` (${i.size})` : ""} — {i.quantity} avail
                       </SelectItem>

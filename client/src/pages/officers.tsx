@@ -16,8 +16,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogFooter,
+  AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Pencil, Download, Upload, Shirt, Mail, Phone, Package, LayoutGrid, List, ArrowUpAZ, ArrowDownAZ } from "lucide-react";
+import { Plus, Search, Pencil, Download, Upload, Shirt, Mail, Phone, Package, LayoutGrid, List, ArrowUpAZ, ArrowDownAZ, Trash2 } from "lucide-react";
 import { MultiSelect } from "@/components/multi-select";
 import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { RANKS, UNITS, parseUnits, joinUnits, UNIT_CSV_SEPARATOR } from "@/lib/constants";
@@ -31,6 +35,7 @@ export default function Officers() {
   const { user } = useApp();
   const { toast } = useToast();
   const editable = can.manageOfficers(user?.role);
+  const isAdmin = user?.role === "admin";
   const { data: officers, isLoading } = useQuery<Officer[]>({ queryKey: ["/api/officers"] });
   const { data: items } = useQuery<Item[]>({ queryKey: ["/api/items"] });
   const { data: assignments } = useQuery<Assignment[]>({ queryKey: ["/api/assignments"] });
@@ -39,6 +44,8 @@ export default function Officers() {
   const [form, setForm] = useState<Partial<Officer> | null>(null);
   const [detail, setDetail] = useState<Officer | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Officer | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [view, setView] = useState<"cards" | "rows">("cards");
   const [rankFilter, setRankFilter] = useState("all");
@@ -94,6 +101,22 @@ export default function Officers() {
     } catch (e: any) {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
     } finally { setSaving(false); }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await apiRequest("DELETE", `/api/officers/${deleteTarget.id}?actor=${encodeURIComponent(user?.name ?? "")}`);
+      queryClient.invalidateQueries({ queryKey: ["/api/officers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/assignments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      if (detail?.id === deleteTarget.id) setDetail(null);
+      toast({ title: "Officer deleted" });
+      setDeleteTarget(null);
+    } catch (e: any) {
+      toast({ title: "Delete failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    } finally { setDeleting(false); }
   }
 
   function doExport() {
@@ -190,6 +213,7 @@ export default function Officers() {
                 <TableHead>Unit(s)</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Items Issued</TableHead>
+                {isAdmin && <TableHead className="w-10" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -201,6 +225,15 @@ export default function Officers() {
                   <TableCell className="text-muted-foreground">{o.unit || "—"}</TableCell>
                   <TableCell><StatusBadge status={o.status} /></TableCell>
                   <TableCell className="text-right">{activeFor(o.id).length}</TableCell>
+                  {isAdmin && (
+                    <TableCell className="text-right">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive"
+                        onClick={(e) => { e.stopPropagation(); setDeleteTarget(o); }}
+                        aria-label="Delete officer" data-testid={`button-delete-officer-${o.id}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>
@@ -222,7 +255,16 @@ export default function Officers() {
                       <p className="text-xs text-muted-foreground">#{o.badgeNumber} · {o.rank}</p>
                     </div>
                   </div>
-                  <StatusBadge status={o.status} />
+                  <div className="flex items-center gap-1">
+                    <StatusBadge status={o.status} />
+                    {isAdmin && (
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive"
+                        onClick={(e) => { e.stopPropagation(); setDeleteTarget(o); }}
+                        aria-label="Delete officer" data-testid={`button-delete-officer-${o.id}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                   <span>{o.unit || "—"}</span>
@@ -302,6 +344,11 @@ export default function Officers() {
                 {detail.notes && <div className="rounded-md bg-muted/40 p-3 text-sm"><span className="text-muted-foreground">Notes: </span>{detail.notes}</div>}
 
                 {editable && <Button className="w-full" onClick={() => { setForm(detail); setDetail(null); }}><Pencil className="mr-1.5 h-4 w-4" /> Edit Officer</Button>}
+                {isAdmin && (
+                  <Button variant="destructive" className="w-full" onClick={() => setDeleteTarget(detail)} data-testid={`button-delete-officer-detail-${detail.id}`}>
+                    <Trash2 className="mr-1.5 h-4 w-4" /> Delete Officer
+                  </Button>
+                )}
               </div>
             </>
           )}
@@ -385,6 +432,28 @@ export default function Officers() {
           notes: (r["Notes"] ?? "").trim(),
         })}
       />
+
+      {/* Delete confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && !deleting && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this officer?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes {deleteTarget ? `${deleteTarget.firstName} ${deleteTarget.lastName}` : ""} and their entire assignment history. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => { e.preventDefault(); confirmDelete(); }}
+              disabled={deleting}
+              data-testid="button-confirm-delete-officer">
+              {deleting ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
