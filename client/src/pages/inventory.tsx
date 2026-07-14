@@ -43,6 +43,16 @@ const blank = (): Partial<Item> => ({
   lastInspected: "", condition: "New", status: "in_stock", requiresInspection: false, attributes: "", notes: "",
 });
 
+// Legacy catalog-level serial fields duplicate the per-unit serial system
+// ("Manage Serials"). Hide them for serialized (unique) items so users enter
+// real serials per unit instead. Shared by render- and save-time visibility.
+const LEGACY_SERIAL_KEYS = new Set(["serialNumber", "frontPanelSerial", "backPanelSerial"]);
+function isVisibleField(f: DynField, type: string | undefined, attrs: Record<string, string>): boolean {
+  if (f.showIf && !f.showIf(attrs)) return false;
+  if (type === "unique" && LEGACY_SERIAL_KEYS.has(f.key)) return false;
+  return true;
+}
+
 export default function Inventory() {
   const { user } = useApp();
   const { toast } = useToast();
@@ -122,14 +132,15 @@ export default function Inventory() {
     : [...ITEM_CATEGORIES];
   const subOptions = ITEM_SUBCATEGORIES[form?.category ?? ""] ?? [];
   const dynFields = getItemFields(form?.category, form?.subcategory);
-  const visibleDynFields = dynFields.filter((f) => !f.showIf || f.showIf(attrs));
+  const visibleDynFields = dynFields.filter((f) => isVisibleField(f, form?.type, attrs));
+  const hasHiddenSerialField = form?.type === "unique" && dynFields.some((f) => LEGACY_SERIAL_KEYS.has(f.key) && (!f.showIf || f.showIf(attrs)));
 
   async function save() {
     if (!form?.name) return toast({ title: "Name is required", variant: "destructive" });
     setSaving(true);
     try {
       const fields = getItemFields(form.category, form.subcategory);
-      const visible = fields.filter((f) => !f.showIf || f.showIf(attrs));
+      const visible = fields.filter((f) => isVisibleField(f, form.type, attrs));
       // Keep only currently-visible, non-bound dynamic fields in the attributes blob.
       const keptAttrs: Record<string, string> = {};
       for (const f of visible) if (!f.bind) { const v = attrs[f.key]; if (v != null && v !== "") keptAttrs[f.key] = v; }
@@ -298,7 +309,11 @@ export default function Inventory() {
               </Field>
               {subOptions.length > 0 && (
                 <Field label="Subcategory">
-                  <Select value={form.subcategory || undefined} onValueChange={(v) => { setAttrs({}); setForm({ ...form, subcategory: v }); }}>
+                  <Select value={form.subcategory || undefined} onValueChange={(v) => {
+                    setAttrs({});
+                    const isTaserCartridges = form.category === "Less Lethal" && v === "TASER Cartridges";
+                    setForm({ ...form, subcategory: v, ...(isTaserCartridges ? { type: "unique" } : {}) });
+                  }}>
                     <SelectTrigger data-testid="select-item-subcategory"><SelectValue placeholder="Select subcategory…" /></SelectTrigger>
                     <SelectContent>{subOptions.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                   </Select>
@@ -339,6 +354,11 @@ export default function Inventory() {
                     {form.category} Details{form.subcategory ? ` — ${form.subcategory}` : ""}
                   </p>
                 </div>
+              )}
+              {hasHiddenSerialField && (
+                <p className="sm:col-span-2 rounded-md bg-muted/50 p-2.5 text-xs text-muted-foreground">
+                  Serial numbers are added per unit — use "Manage Serials" after saving this item.
+                </p>
               )}
               {visibleDynFields.map((f) => (
                 <Field key={f.key} label={f.label}>{renderDyn(f)}</Field>
