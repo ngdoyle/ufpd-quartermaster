@@ -1,10 +1,11 @@
 import {
-  users, officers, items, assignments, kits, kitItems, auditLog, itemUnits,
+  users, officers, items, assignments, kits, kitItems, auditLog, itemUnits, itemVariants,
 } from "@shared/schema";
 import type {
   User, InsertUser, Officer, InsertOfficer, Item, InsertItem,
   Assignment, InsertAssignment, Kit, InsertKit, KitItem, InsertKitItem,
-  AuditEntry, InsertAudit, ItemUnit, InsertItemUnit,
+  AuditEntry, InsertAudit, ItemUnit, InsertItemUnit, ItemVariant, InsertItemVariant,
+  VariantCounts,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 // SQLCipher-capable, API-compatible drop-in replacement for better-sqlite3.
@@ -160,6 +161,16 @@ CREATE TABLE IF NOT EXISTS "item_units" (
   "notes" text,
   "created_at" text NOT NULL
 );
+CREATE TABLE IF NOT EXISTS "item_variants" (
+  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+  "item_id" integer NOT NULL,
+  "size" text NOT NULL,
+  "sku" text,
+  "quantity" integer DEFAULT 0 NOT NULL,
+  "par_level" integer DEFAULT 0 NOT NULL,
+  "notes" text,
+  "created_at" text NOT NULL
+);
 `);
 
 /* ----------------------- Additive migrations ----------------------
@@ -178,6 +189,10 @@ function addColumnIfMissing(table: string, column: string, definition: string) {
 
 // assignments.item_unit_id links an assignment to a specific serialized unit.
 addColumnIfMissing("assignments", "item_unit_id", '"item_unit_id" integer');
+// assignments.item_variant_id links an assignment to a specific size variant.
+addColumnIfMissing("assignments", "item_variant_id", '"item_variant_id" integer');
+// items.return_behavior controls restock-on-return for sized items.
+addColumnIfMissing("items", "return_behavior", `"return_behavior" text DEFAULT 'returnable'`);
 // Safety net in case an older item_units table predates the secondary serial.
 addColumnIfMissing("item_units", "secondary_serial_number", '"secondary_serial_number" text');
 
@@ -221,6 +236,13 @@ export interface IStorage {
   deleteUnit(id: number): Promise<void>;
   unitStatusCountsByItem(): Promise<Record<number, UnitStatusCounts>>;
   syncItemQuantity(itemId: number): Promise<void>;
+  // item variants (sized)
+  listVariants(itemId: number): Promise<ItemVariant[]>;
+  getVariant(id: number): Promise<ItemVariant | undefined>;
+  createVariant(v: InsertItemVariant): Promise<ItemVariant>;
+  updateVariant(id: number, patch: Partial<InsertItemVariant>): Promise<ItemVariant | undefined>;
+  deleteVariant(id: number): Promise<void>;
+  variantCountsByItem(): Promise<Record<number, VariantCounts>>;
   // assignments
   listAssignments(): Promise<Assignment[]>;
   listActiveAssignments(): Promise<Assignment[]>;
@@ -349,6 +371,33 @@ export class DatabaseStorage implements IStorage {
       patch.status = inStock > 0 ? "in_stock" : "issued";
     }
     db.update(items).set(patch).where(eq(items.id, itemId)).run();
+  }
+
+  // ---- item variants (sized) ----
+  async listVariants(itemId: number) {
+    return db.select().from(itemVariants).where(eq(itemVariants.itemId, itemId)).orderBy(itemVariants.id).all();
+  }
+  async getVariant(id: number) {
+    return db.select().from(itemVariants).where(eq(itemVariants.id, id)).get();
+  }
+  async createVariant(v: InsertItemVariant) {
+    return db.insert(itemVariants).values({ ...v, createdAt: now() }).returning().get();
+  }
+  async updateVariant(id: number, patch: Partial<InsertItemVariant>) {
+    return db.update(itemVariants).set(patch).where(eq(itemVariants.id, id)).returning().get();
+  }
+  async deleteVariant(id: number) {
+    db.delete(itemVariants).where(eq(itemVariants.id, id)).run();
+  }
+  async variantCountsByItem() {
+    const out: Record<number, VariantCounts> = {};
+    const all = db.select().from(itemVariants).orderBy(itemVariants.id).all();
+    for (const v of all) {
+      const c = out[v.itemId] ?? (out[v.itemId] = { total: 0, sizes: [] });
+      c.total += v.quantity;
+      c.sizes.push({ id: v.id, size: v.size, quantity: v.quantity, parLevel: v.parLevel });
+    }
+    return out;
   }
 
   // ---- assignments ----

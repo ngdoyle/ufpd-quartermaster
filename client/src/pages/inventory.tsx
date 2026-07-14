@@ -24,9 +24,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, QrCode, Pencil, Trash2, Download, Upload, Printer, ClipboardCheck, Package, Layers } from "lucide-react";
+import { Plus, Search, QrCode, Pencil, Trash2, Download, Upload, Printer, ClipboardCheck, Package, Layers, Shirt } from "lucide-react";
 import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { SerialUnitsDialog } from "@/components/serial-units-dialog";
+import { SizeVariantsDialog } from "@/components/size-variants-dialog";
 import { LOCATIONS } from "@/lib/constants";
 import {
   ITEM_CATEGORIES, ITEM_SUBCATEGORIES, getItemFields, parseAttributes, attributeSummary,
@@ -35,12 +36,13 @@ import {
 } from "@/lib/item-fields";
 
 type UnitCounts = { total: number; in_stock: number; issued: number; maintenance: number; retired: number };
-type InvItem = Item & { unitCounts?: UnitCounts; onHand: number; lowStock: boolean };
+type VariantCounts = { total: number; sizes: { id: number; size: string; quantity: number; parLevel: number }[] };
+type InvItem = Item & { unitCounts?: UnitCounts; variantCounts?: VariantCounts; onHand: number; lowStock: boolean };
 
 const blank = (): Partial<Item> => ({
   name: "", category: "", subcategory: "", type: "consumable", sku: "", serialNumber: "", size: "", color: "",
   quantity: 0, parLevel: 0, location: "", unitCost: 0, vendor: "", grantNumber: "", expirationDate: "",
-  lastInspected: "", condition: "New", status: "in_stock", requiresInspection: false, attributes: "", notes: "",
+  lastInspected: "", condition: "New", status: "in_stock", requiresInspection: false, returnBehavior: "returnable", attributes: "", notes: "",
 });
 
 // Legacy catalog-level serial fields duplicate the per-unit serial system
@@ -49,7 +51,8 @@ const blank = (): Partial<Item> => ({
 const LEGACY_SERIAL_KEYS = new Set(["serialNumber", "frontPanelSerial", "backPanelSerial"]);
 function isVisibleField(f: DynField, type: string | undefined, attrs: Record<string, string>): boolean {
   if (f.showIf && !f.showIf(attrs)) return false;
-  if (type === "unique" && LEGACY_SERIAL_KEYS.has(f.key)) return false;
+  // Sized items are not serialized either — hide the legacy serial fields.
+  if ((type === "unique" || type === "sized") && LEGACY_SERIAL_KEYS.has(f.key)) return false;
   return true;
 }
 
@@ -67,6 +70,7 @@ export default function Inventory() {
   const [attrs, setAttrs] = useState<Record<string, string>>({});
   const [qr, setQr] = useState<Item | null>(null);
   const [serialsFor, setSerialsFor] = useState<InvItem | null>(null);
+  const [sizesFor, setSizesFor] = useState<InvItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
@@ -225,7 +229,7 @@ export default function Inventory() {
           </div>
           <FilterSelect value={cat} onChange={setCat} placeholder="Category" options={filterCategories} />
           <FilterSelect value={type} onChange={setType} placeholder="Type"
-            options={[["consumable", "Consumable"], ["returnable", "Returnable"], ["unique", "Serialized"]]} />
+            options={[["consumable", "Consumable"], ["returnable", "Returnable"], ["unique", "Serialized"], ["sized", "Sized (clothing)"]]} />
           <FilterSelect value={status} onChange={setStatus} placeholder="Status"
             options={[["in_stock", "In Stock"], ["issued", "Issued"], ["maintenance", "Maintenance"], ["retired", "Retired"], ["low_stock", "Low Stock"]]} />
         </div>
@@ -253,7 +257,7 @@ export default function Inventory() {
                 </thead>
                 <tbody className="divide-y divide-border">
                   {filtered.map((i) => (
-                    <ItemRow key={i.id} item={i} editable={editable} onEdit={() => openEdit(i)} onQr={() => setQr(i)} onDelete={remove} onInspect={inspect} onSerials={() => setSerialsFor(i)} />
+                    <ItemRow key={i.id} item={i} editable={editable} onEdit={() => openEdit(i)} onQr={() => setQr(i)} onDelete={remove} onInspect={inspect} onSerials={() => setSerialsFor(i)} onSizes={() => setSizesFor(i)} />
                   ))}
                 </tbody>
               </table>
@@ -283,6 +287,7 @@ export default function Inventory() {
                 <div className="mt-2.5 flex gap-1.5">
                   <Button variant="outline" size="sm" className="flex-1" onClick={() => setQr(i)}><QrCode className="mr-1 h-4 w-4" />QR</Button>
                   {i.type === "unique" && <Button variant="outline" size="sm" className="flex-1" onClick={() => setSerialsFor(i)} data-testid={`button-serials-${i.id}`}><Layers className="mr-1 h-4 w-4" />Serials</Button>}
+                  {i.type === "sized" && <Button variant="outline" size="sm" className="flex-1" onClick={() => setSizesFor(i)} data-testid={`button-manage-sizes-${i.id}`}><Shirt className="mr-1 h-4 w-4" />Sizes</Button>}
                   {editable && <Button variant="outline" size="sm" className="flex-1" onClick={() => openEdit(i)}><Pencil className="mr-1 h-4 w-4" />Edit</Button>}
                 </div>
               </Card>
@@ -321,17 +326,35 @@ export default function Inventory() {
               )}
               <Field label="Type">
                 <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger data-testid="select-item-type"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="consumable">Consumable</SelectItem>
                     <SelectItem value="returnable">Returnable</SelectItem>
                     <SelectItem value="unique">Serialized (unique)</SelectItem>
+                    <SelectItem value="sized">Sized (clothing)</SelectItem>
                   </SelectContent>
                 </Select>
               </Field>
               <Field label="SKU / Asset Tag"><Input value={form.sku ?? ""} onChange={(e) => setForm({ ...form, sku: e.target.value })} /></Field>
-              <Field label="Quantity on hand"><Input type="number" value={form.quantity ?? 0} onChange={(e) => setForm({ ...form, quantity: e.target.value as any })} data-testid="input-item-qty" /></Field>
+              {form.type === "sized" ? (
+                <Field label="Return behavior">
+                  <Select value={form.returnBehavior ?? "returnable"} onValueChange={(v) => setForm({ ...form, returnBehavior: v })}>
+                    <SelectTrigger data-testid="select-return-behavior"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="returnable">Returnable (restock on return)</SelectItem>
+                      <SelectItem value="consumable">Consumable (not restocked)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              ) : (
+                <Field label="Quantity on hand"><Input type="number" value={form.quantity ?? 0} onChange={(e) => setForm({ ...form, quantity: e.target.value as any })} data-testid="input-item-qty" /></Field>
+              )}
               <Field label="PAR / Reorder level"><Input type="number" value={form.parLevel ?? 0} onChange={(e) => setForm({ ...form, parLevel: e.target.value as any })} /></Field>
+              {form.type === "sized" && (
+                <p className="sm:col-span-2 rounded-md bg-muted/50 p-2.5 text-xs text-muted-foreground">
+                  Stock is tracked per size — use "Manage Sizes" after saving this item.
+                </p>
+              )}
               <Field label="Location">
                 <Select value={form.location || undefined} onValueChange={(v) => setForm({ ...form, location: v })}>
                   <SelectTrigger data-testid="select-location"><SelectValue placeholder="Select location…" /></SelectTrigger>
@@ -408,6 +431,16 @@ export default function Inventory() {
         />
       )}
 
+      {/* Size variants */}
+      {sizesFor && (
+        <SizeVariantsDialog
+          item={sizesFor}
+          actor={user?.name}
+          open={!!sizesFor}
+          onOpenChange={(o) => !o && setSizesFor(null)}
+        />
+      )}
+
       {/* Bulk import */}
       <BulkImport
         open={importOpen}
@@ -416,7 +449,7 @@ export default function Inventory() {
         endpoint="/api/items/bulk"
         templateFilename="inventory-import-template.csv"
         actor={user?.name}
-        instructions={`One template covers every category. Required: Name. Fill the shared columns plus only the category-specific columns that apply to each row — leave the rest blank. Type is consumable, returnable, or unique. Location must be one of: ${LOCATIONS.join(", ")}. Quantity, PAR, and Unit Cost are numbers; dates use YYYY-MM-DD.`}
+        instructions={`One template covers every category. Required: Name. Fill the shared columns plus only the category-specific columns that apply to each row — leave the rest blank. Type is consumable, returnable, unique, or sized. Sized (clothing) rows sharing the same Name + Category merge into one item with one row per Size (Size required; PAR becomes that size's par; set Return Behavior to returnable or consumable). Location must be one of: ${LOCATIONS.join(", ")}. Quantity, PAR, and Unit Cost are numbers; dates use YYYY-MM-DD.`}
         invalidateKeys={["/api/items"]}
         columns={ITEM_COLUMNS}
         sampleRows={ITEM_SAMPLE_ROWS}
@@ -431,6 +464,7 @@ export default function Inventory() {
             category,
             subcategory,
             type: ((r["Type"] ?? "consumable").trim().toLowerCase()) || "consumable",
+            returnBehavior: ((r["Return Behavior"] ?? "").trim().toLowerCase() === "consumable" ? "consumable" : "returnable"),
             sku: (r["SKU"] ?? "").trim(),
             serialNumber: (r["Serial"] ?? "").trim(),
             size: (r["Size"] ?? "").trim(),
@@ -461,7 +495,8 @@ const ITEM_COLUMNS: ColumnSpec[] = [
   { header: "Name", example: "Glock 17 Gen5", note: "Required" },
   { header: "Category", example: "Firearms", note: "Firearms | Ammunition | Uniforms | Less Lethal | Duty Gear | Ballistic Vests" },
   { header: "Subcategory", example: "Handgun", note: "Must match the chosen Category" },
-  { header: "Type", example: "unique", note: "consumable | returnable | unique" },
+  { header: "Type", example: "unique", note: "consumable | returnable | unique | sized" },
+  { header: "Return Behavior", example: "", note: "Sized items: returnable | consumable" },
   { header: "SKU", example: "", note: "Optional internal code" },
   { header: "Serial", example: "", note: "Serialized items (Firearms, TASER)" },
   { header: "Size", example: "", note: "Uniforms, Duty Gear" },
@@ -514,6 +549,16 @@ const ITEM_SAMPLE_ROWS: Record<string, string>[] = [
     Size: "L", Quantity: "1", PAR: "0", Location: "Stock Room", "Unit Cost": "950", Vendor: "Point Blank",
     Brand: "Point Blank", Ballistics: "Yes", "Front Panel Serial": "FP-00123", "Back Panel Serial": "BP-00123",
   },
+  // Sized (clothing): rows sharing Name + Category merge into ONE item, one row
+  // per size. Size is required; PAR is that size's par.
+  {
+    Name: "Class B Uniform Shirt", Category: "Uniforms", Subcategory: "Sworn Duty Uniforms", Type: "sized",
+    "Return Behavior": "returnable", Size: "M", Quantity: "12", PAR: "4", Location: "Stock Room", "Unit Cost": "42", Vendor: "5.11",
+  },
+  {
+    Name: "Class B Uniform Shirt", Category: "Uniforms", Subcategory: "Sworn Duty Uniforms", Type: "sized",
+    "Return Behavior": "returnable", Size: "L", Quantity: "21", PAR: "6", Location: "Stock Room", "Unit Cost": "42", Vendor: "5.11",
+  },
 ];
 
 function StockPill({ item }: { item: InvItem }) {
@@ -525,6 +570,16 @@ function StockPill({ item }: { item: InvItem }) {
       <div className="flex flex-wrap items-center gap-1">
         <Pill tone="purple">Serialized</Pill>
         <Pill tone={item.lowStock ? "amber" : "green"}>{onHand} on hand{item.parLevel ? ` / PAR ${item.parLevel}` : ""}</Pill>
+      </div>
+    );
+  }
+  if (item.type === "sized") {
+    // On-hand is the sum of sizes; show a compact per-size breakdown beneath.
+    const breakdown = (item.variantCounts?.sizes ?? []).map((s) => `${s.size} ${s.quantity}`).join(" · ");
+    return (
+      <div className="flex flex-col gap-0.5" data-testid={`stock-sized-${item.id}`}>
+        <Pill tone={item.lowStock ? "amber" : "green"}>{onHand} on hand{item.parLevel ? ` / PAR ${item.parLevel}` : ""}</Pill>
+        {breakdown && <span className="text-xs text-muted-foreground">{breakdown}</span>}
       </div>
     );
   }
@@ -552,7 +607,7 @@ function StatusCell({ item }: { item: InvItem }) {
   return <StatusBadge status={item.status} />;
 }
 
-function ItemRow({ item, editable, onEdit, onQr, onDelete, onInspect, onSerials }: any) {
+function ItemRow({ item, editable, onEdit, onQr, onDelete, onInspect, onSerials, onSizes }: any) {
   const exp = daysUntil(item.expirationDate);
   const summary = attributeSummary(item);
   return (
@@ -578,6 +633,9 @@ function ItemRow({ item, editable, onEdit, onQr, onDelete, onInspect, onSerials 
           )}
           {item.type === "unique" && (
             <Button variant="ghost" size="icon" title="Manage Serials" onClick={onSerials} data-testid={`button-serials-${item.id}`}><Layers className="h-4 w-4" /></Button>
+          )}
+          {item.type === "sized" && (
+            <Button variant="ghost" size="icon" title="Manage Sizes" onClick={onSizes} data-testid={`button-manage-sizes-${item.id}`}><Shirt className="h-4 w-4" /></Button>
           )}
           <Button variant="ghost" size="icon" title="QR label" onClick={onQr} data-testid={`button-qr-${item.id}`}><QrCode className="h-4 w-4" /></Button>
           {editable && <Button variant="ghost" size="icon" title="Edit" onClick={onEdit} data-testid={`button-edit-${item.id}`}><Pencil className="h-4 w-4" /></Button>}

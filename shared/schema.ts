@@ -54,7 +54,7 @@ export type Officer = typeof officers.$inferSelect;
 /* ------------------------------------------------------------------ */
 /* Items — inventory catalog                                           */
 /* ------------------------------------------------------------------ */
-// type: consumable (decrements, not returned) | returnable (bulk, returned) | unique (serialized, qty 1)
+// type: consumable (decrements, not returned) | returnable (bulk, returned) | unique (serialized, qty 1) | sized (clothing tracked per size via item_variants)
 // status: in_stock | issued | maintenance | retired
 export const items = sqliteTable("items", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -75,6 +75,9 @@ export const items = sqliteTable("items", {
   expirationDate: text("expiration_date"),
   condition: text("condition").default("New"),
   status: text("status").notNull().default("in_stock"),
+  // For `sized` items: whether issued sizes are restocked on return.
+  // "returnable" (default) restocks the variant; "consumable" does not.
+  returnBehavior: text("return_behavior").default("returnable"),
   // inspection gating
   requiresInspection: integer("requires_inspection", { mode: "boolean" }).notNull().default(false),
   lastInspected: text("last_inspected"),
@@ -114,31 +117,73 @@ export type InsertItemUnit = z.infer<typeof insertItemUnitSchema>;
 export type ItemUnit = typeof itemUnits.$inferSelect;
 
 /* ------------------------------------------------------------------ */
+/* Item variants — per-size stock for `sized` (clothing) items         */
+/* ------------------------------------------------------------------ */
+// One row per size of a `sized` item (e.g. "S", "M", "34x32"). Stock lives
+// on the variant, not the parent item; the item's onHand is the sum of its
+// variant quantities. parLevel is an optional per-size reorder threshold.
+export const itemVariants = sqliteTable("item_variants", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  itemId: integer("item_id").notNull(),
+  size: text("size").notNull(),
+  sku: text("sku"),
+  quantity: integer("quantity").notNull().default(0),
+  parLevel: integer("par_level").notNull().default(0),
+  notes: text("notes"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertItemVariantSchema = createInsertSchema(itemVariants).omit({ id: true, createdAt: true });
+export type InsertItemVariant = z.infer<typeof insertItemVariantSchema>;
+export type ItemVariant = typeof itemVariants.$inferSelect;
+
+/* ------------------------------------------------------------------ */
 /* Stock computation — single source of truth for on-hand / low-stock  */
 /* ------------------------------------------------------------------ */
 export type UnitCounts = { total: number; in_stock: number; issued: number; maintenance: number; retired: number };
+// Per-size rollup attached to `sized` items: total on-hand plus each size line.
+export type VariantCounts = {
+  total: number;
+  sizes: { id: number; size: string; quantity: number; parLevel: number }[];
+};
 
 // Computed stock figures attached to each item in GET /api/items.
-export type ItemWithStock = Item & { unitCounts?: UnitCounts; onHand: number; lowStock: boolean };
+export type ItemWithStock = Item & {
+  unitCounts?: UnitCounts;
+  variantCounts?: VariantCounts;
+  onHand: number;
+  lowStock: boolean;
+};
 
 // On-hand (available) and low-stock are derived identically everywhere — the
 // items API, dashboard, inventory, and reports all call this so the figures
 // never diverge.
 //   - serialized item WITH tracked units (unitCounts.total > 0):
 //     onHand = in_stock units only (issued, maintenance, retired excluded).
-//   - otherwise (non-serialized, or serialized with no tracked units):
+//   - sized item WITH at least one variant (variantCounts.sizes > 0):
+//     onHand = sum of variant quantities.
+//   - otherwise (non-serialized, or serialized/sized with no tracked rows):
 //     onHand = item.quantity.
 //   - lowStock = parLevel > 0 && onHand <= parLevel (at or below par).
 export function computeStock(
   item: Pick<Item, "type" | "quantity" | "parLevel">,
   unitCounts?: UnitCounts | null,
+  variantCounts?: VariantCounts | null,
 ): { onHand: number; lowStock: boolean } {
-  const onHand =
-    item.type === "unique" && unitCounts && unitCounts.total > 0
-      ? unitCounts.in_stock
-      : item.quantity;
+  let onHand = item.quantity;
+  if (item.type === "unique" && unitCounts && unitCounts.total > 0) {
+    onHand = unitCounts.in_stock;
+  } else if (item.type === "sized" && variantCounts && variantCounts.sizes.length > 0) {
+    onHand = variantCounts.total;
+  }
   const lowStock = item.parLevel > 0 && onHand <= item.parLevel;
   return { onHand, lowStock };
+}
+
+// Per-size low-stock flag for `sized` items (used by the manage-sizes dialog
+// and the reorder report). A size is low when it has a par set and is at/below.
+export function variantLowStock(v: Pick<ItemVariant, "quantity" | "parLevel">): boolean {
+  return v.parLevel > 0 && v.quantity <= v.parLevel;
 }
 
 /* ------------------------------------------------------------------ */
@@ -151,6 +196,9 @@ export const assignments = sqliteTable("assignments", {
   // Optional link to a specific serialized unit (item_units.id) when the issued
   // item is `unique`. Null for non-serialized assignments.
   itemUnitId: integer("item_unit_id"),
+  // Optional link to a specific size (item_variants.id) when the issued item is
+  // `sized`. Null for non-sized assignments.
+  itemVariantId: integer("item_variant_id"),
   officerId: integer("officer_id").notNull(),
   quantity: integer("quantity").notNull().default(1),
   status: text("status").notNull().default("active"),

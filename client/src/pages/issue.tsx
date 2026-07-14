@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useApp } from "@/lib/app-context";
 import { PageHeader, Pill, TypeBadge, EmptyState } from "@/components/bits";
 import { fmtDate, fmtDateTime, relativeDays } from "@/lib/format";
-import type { Officer, Item, Assignment, ItemUnit } from "@shared/schema";
+import type { Officer, Item, ItemWithStock, Assignment, ItemUnit, ItemVariant } from "@shared/schema";
+import { officerSizeForItem } from "@/lib/item-fields";
 import { isDualSerialItem } from "@/components/serial-units-dialog";
 import { ITEM_CATEGORIES, ITEM_SUBCATEGORIES } from "@/lib/item-fields";
 import { Button } from "@/components/ui/button";
@@ -23,8 +24,8 @@ export default function IssueReturn() {
   const { user } = useApp();
   const { toast } = useToast();
   const { data: officers } = useQuery<Officer[]>({ queryKey: ["/api/officers"] });
-  const { data: items } = useQuery<Item[]>({ queryKey: ["/api/items"] });
-  const { data: assignments } = useQuery<Assignment[]>({ queryKey: ["/api/assignments"] });
+  const { data: items } = useQuery<ItemWithStock[]>({ queryKey: ["/api/items"] });
+  const { data: assignments } = useQuery<(Assignment & { variantSize?: string | null })[]>({ queryKey: ["/api/assignments"] });
 
   // issue form state
   const [officerId, setOfficerId] = useState("");
@@ -32,6 +33,7 @@ export default function IssueReturn() {
   const [issueSubcategory, setIssueSubcategory] = useState("");
   const [itemId, setItemId] = useState("");
   const [unitId, setUnitId] = useState("");
+  const [variantId, setVariantId] = useState("");
   const [qty, setQty] = useState(1);
   const [dueDate, setDueDate] = useState("");
   const [signature, setSignature] = useState("");
@@ -46,7 +48,9 @@ export default function IssueReturn() {
 
   const [q, setQ] = useState("");
 
-  const availableItems = useMemo(() => (items ?? []).filter((i) => i.status !== "retired" && i.status !== "maintenance" && i.quantity > 0), [items]);
+  // Sized items keep item.quantity at 0 (stock lives on the variants), so gate
+  // availability on onHand which computeStock derives per type.
+  const availableItems = useMemo(() => (items ?? []).filter((i) => i.status !== "retired" && i.status !== "maintenance" && (i.type === "sized" ? i.onHand > 0 : i.quantity > 0)), [items]);
   // Cascade derivations are driven by the ACTUAL item data (categories are
   // free-form and mostly arrive via CSV import), not the hardcoded constants.
   // Canonical values from ITEM_CATEGORIES/ITEM_SUBCATEGORIES sort first (in
@@ -84,11 +88,39 @@ export default function IssueReturn() {
   );
   const selectedItem = items?.find((i) => String(i.id) === itemId);
   const isUnique = selectedItem?.type === "unique";
+  const isSized = selectedItem?.type === "sized";
   const { data: selectedUnits } = useQuery<ItemUnit[]>({
     queryKey: ["/api/items", Number(itemId), "units"],
     enabled: !!isUnique,
   });
   const inStockUnits = useMemo(() => (selectedUnits ?? []).filter((u) => u.status === "in_stock"), [selectedUnits]);
+  const { data: selectedVariants } = useQuery<ItemVariant[]>({
+    queryKey: ["/api/items", Number(itemId), "variants"],
+    enabled: !!isSized,
+  });
+  const inStockVariants = useMemo(() => (selectedVariants ?? []).filter((v) => v.quantity > 0), [selectedVariants]);
+  const selectedVariant = selectedVariants?.find((v) => String(v.id) === variantId);
+  const selectedOfficer = officers?.find((o) => String(o.id) === officerId);
+
+  // Officer-profile auto-suggest: when both a sized item and an officer are
+  // chosen, preselect the variant matching the officer's recorded size.
+  const suggestedSize = useMemo(
+    () => (isSized && selectedItem && selectedOfficer ? officerSizeForItem(selectedItem, selectedOfficer) : null),
+    [isSized, selectedItem, selectedOfficer],
+  );
+  const suggestedInStock = useMemo(
+    () => (suggestedSize ? inStockVariants.find((v) => v.size.trim().toLowerCase() === suggestedSize.trim().toLowerCase()) : undefined),
+    [suggestedSize, inStockVariants],
+  );
+  const suggestedOutOfStock = useMemo(
+    () => (suggestedSize && !suggestedInStock
+      ? (selectedVariants ?? []).find((v) => v.size.trim().toLowerCase() === suggestedSize.trim().toLowerCase())
+      : undefined),
+    [suggestedSize, suggestedInStock, selectedVariants],
+  );
+  useEffect(() => {
+    if (suggestedInStock && !variantId) setVariantId(String(suggestedInStock.id));
+  }, [suggestedInStock]);
   const unitLabel = (u: ItemUnit) =>
     u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber;
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
@@ -107,17 +139,23 @@ export default function IssueReturn() {
       return toast({ title: "No serial in stock", description: "Add an available unit on the Inventory page first.", variant: "destructive" });
     if (isUnique && inStockUnits.length > 0 && !unitId)
       return toast({ title: "Select a serial/unit to issue", variant: "destructive" });
+    if (isSized && inStockVariants.length === 0)
+      return toast({ title: "No size in stock", description: "Add stock for a size on the Inventory page first.", variant: "destructive" });
+    if (isSized && !variantId)
+      return toast({ title: "Select a size to issue", variant: "destructive" });
     setIssuing(true);
     try {
       await apiRequest("POST", "/api/issue", {
         officerId: Number(officerId), itemId: Number(itemId), quantity: Number(qty) || 1,
         itemUnitId: isUnique && unitId ? Number(unitId) : null,
+        itemVariantId: isSized && variantId ? Number(variantId) : null,
         dueDate: dueDate || null, signature, notes, issuedBy: user?.name,
       });
       invalidateAll();
       queryClient.invalidateQueries({ queryKey: ["/api/items", Number(itemId), "units"] });
-      toast({ title: "Item issued", description: `${qty}× ${selectedItem?.name}` });
-      setIssueCategory(""); setIssueSubcategory(""); setItemId(""); setUnitId(""); setQty(1); setDueDate(""); setSignature(""); setNotes("");
+      queryClient.invalidateQueries({ queryKey: ["/api/items", Number(itemId), "variants"] });
+      toast({ title: "Item issued", description: `${qty}× ${selectedItem?.name}${selectedVariant ? ` (${selectedVariant.size})` : ""}` });
+      setIssueCategory(""); setIssueSubcategory(""); setItemId(""); setUnitId(""); setVariantId(""); setQty(1); setDueDate(""); setSignature(""); setNotes("");
     } catch (e: any) {
       toast({ title: "Issue failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
     } finally { setIssuing(false); }
@@ -169,14 +207,14 @@ export default function IssueReturn() {
               <div className="space-y-1.5">
                 <Label>Item</Label>
                 <div className="grid grid-cols-2 gap-2">
-                  <Select value={issueCategory} onValueChange={(v) => { setIssueCategory(v); setIssueSubcategory(""); setItemId(""); setUnitId(""); setQty(1); }}>
+                  <Select value={issueCategory} onValueChange={(v) => { setIssueCategory(v); setIssueSubcategory(""); setItemId(""); setUnitId(""); setVariantId(""); setQty(1); }}>
                     <SelectTrigger data-testid="select-issue-category"><SelectValue placeholder="Category…" /></SelectTrigger>
                     <SelectContent>
                       {availableCategories.map((c) => <SelectItem key={c} value={c}>{c === NO_CATEGORY ? "Uncategorized" : c}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   {issueCategory && availableSubcategories.length > 0 && (
-                    <Select value={issueSubcategory} onValueChange={(v) => { setIssueSubcategory(v); setItemId(""); setUnitId(""); setQty(1); }}>
+                    <Select value={issueSubcategory} onValueChange={(v) => { setIssueSubcategory(v); setItemId(""); setUnitId(""); setVariantId(""); setQty(1); }}>
                       <SelectTrigger data-testid="select-issue-subcategory"><SelectValue placeholder="Subcategory…" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All</SelectItem>
@@ -185,12 +223,12 @@ export default function IssueReturn() {
                     </Select>
                   )}
                 </div>
-                <Select value={itemId} onValueChange={(v) => { setItemId(v); setUnitId(""); setQty(1); }} disabled={!issueCategory}>
+                <Select value={itemId} onValueChange={(v) => { setItemId(v); setUnitId(""); setVariantId(""); setQty(1); }} disabled={!issueCategory}>
                   <SelectTrigger data-testid="select-item"><SelectValue placeholder={issueCategory ? "Select item in stock…" : "Select category first…"} /></SelectTrigger>
                   <SelectContent>
                     {filteredItems.map((i) => (
                       <SelectItem key={i.id} value={String(i.id)}>
-                        {i.name}{i.size ? ` (${i.size})` : ""} — {i.quantity} avail
+                        {i.name}{i.type !== "sized" && i.size ? ` (${i.size})` : ""} — {i.type === "sized" ? i.onHand : i.quantity} avail
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -198,7 +236,7 @@ export default function IssueReturn() {
                 {selectedItem && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <TypeBadge type={selectedItem.type} />
-                    <Pill tone="gray">{selectedItem.quantity} in stock</Pill>
+                    <Pill tone="gray">{selectedItem.type === "sized" ? selectedItem.onHand : selectedItem.quantity} in stock</Pill>
                     {selectedItem.location && <Pill tone="gray">{selectedItem.location}</Pill>}
                     {selectedItem.requiresInspection && <Pill tone="amber">inspection on return</Pill>}
                   </div>
@@ -223,10 +261,34 @@ export default function IssueReturn() {
                 </div>
               )}
 
+              {isSized && (
+                <div className="space-y-1.5">
+                  <Label>Size</Label>
+                  {inStockVariants.length === 0 ? (
+                    <p className="rounded-md bg-destructive/10 p-2.5 text-xs text-destructive" data-testid="text-no-sizes">
+                      No sizes in stock. Add stock for a size on the Inventory page before issuing.
+                    </p>
+                  ) : (
+                    <Select value={variantId} onValueChange={(v) => { setVariantId(v); setQty(1); }}>
+                      <SelectTrigger data-testid="select-issue-size"><SelectValue placeholder="Select size to issue…" /></SelectTrigger>
+                      <SelectContent>
+                        {inStockVariants.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.size} — {v.quantity} avail</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {suggestedInStock && (
+                    <p className="text-xs text-muted-foreground" data-testid="text-size-suggested">Auto-selected from profile ({suggestedInStock.size})</p>
+                  )}
+                  {suggestedOutOfStock && (
+                    <p className="text-xs text-chart-3" data-testid="text-size-oos">Officer wears {suggestedOutOfStock.size} — out of stock</p>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Quantity</Label>
-                  <Input type="number" min={1} max={selectedItem?.type === "unique" ? 1 : selectedItem?.quantity ?? 999}
+                  <Input type="number" min={1} max={selectedItem?.type === "unique" ? 1 : isSized ? (selectedVariant?.quantity ?? 1) : selectedItem?.quantity ?? 999}
                     value={qty} onChange={(e) => setQty(Number(e.target.value))} disabled={selectedItem?.type === "unique"} data-testid="input-issue-qty" />
                 </div>
                 <div className="space-y-1.5">
@@ -269,7 +331,7 @@ export default function IssueReturn() {
                   return (
                     <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3" data-testid={`row-assignment-${a.id}`}>
                       <div className="min-w-0">
-                        <p className="font-medium leading-tight">{a.quantity}× {itemName(a.itemId)}</p>
+                        <p className="font-medium leading-tight">{a.quantity}× {itemName(a.itemId)}{a.variantSize ? ` · ${a.variantSize}` : ""}</p>
                         <p className="text-xs text-muted-foreground">
                           {officerName(a.officerId)} · issued {fmtDate(a.issuedAt)}{a.dueDate ? ` · due ${fmtDate(a.dueDate)}` : ""}
                         </p>

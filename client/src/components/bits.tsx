@@ -44,8 +44,8 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 export function TypeBadge({ type }: { type: string }) {
-  const map: Record<string, keyof typeof TONE> = { consumable: "amber", returnable: "blue", unique: "purple" };
-  const label: Record<string, string> = { consumable: "Consumable", returnable: "Returnable", unique: "Serialized" };
+  const map: Record<string, keyof typeof TONE> = { consumable: "amber", returnable: "blue", unique: "purple", sized: "green" };
+  const label: Record<string, string> = { consumable: "Consumable", returnable: "Returnable", unique: "Serialized", sized: "Sized" };
   return <Pill tone={map[type] ?? "gray"}>{label[type] ?? type}</Pill>;
 }
 

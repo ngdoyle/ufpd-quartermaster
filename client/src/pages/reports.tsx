@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import { fmtDate, fmtCurrency, relativeDays, daysUntil, exportCsv } from "@/lib/format";
 import type { Officer, Item, Assignment, ItemWithStock } from "@shared/schema";
+import { variantLowStock } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -34,8 +35,24 @@ export default function Reports() {
   );
   const selectedOfficer = issuedOfficers.find((o) => String(o.id) === issuedOfficerFilter);
   const overdue = active.filter((a) => a.dueDate && new Date(a.dueDate) < new Date());
-  const lowStock = (items ?? []).filter((i) => i.lowStock);
   const expiring = (items ?? []).filter((i) => { const d = daysUntil(i.expirationDate); return d !== null && d <= 90; });
+
+  // Reorder list. Sized items track PAR per size, so they expand into one row
+  // per low size; every other type contributes a single item-level row.
+  const reorderRows = useMemo(() => {
+    const rows: { key: string; name: string; onHand: number; par: number; reorder: number; vendor: string }[] = [];
+    for (const i of items ?? []) {
+      if (i.type === "sized" && i.variantCounts) {
+        for (const s of i.variantCounts.sizes) {
+          if (!variantLowStock(s)) continue;
+          rows.push({ key: `v${s.id}`, name: `${i.name} — ${s.size}`, onHand: s.quantity, par: s.parLevel, reorder: Math.max(s.parLevel - s.quantity, 0), vendor: i.vendor ?? "—" });
+        }
+      } else if (i.lowStock) {
+        rows.push({ key: `i${i.id}`, name: i.name, onHand: i.onHand, par: i.parLevel, reorder: Math.max(i.parLevel - i.onHand, 0), vendor: i.vendor ?? "—" });
+      }
+    }
+    return rows;
+  }, [items]);
 
   const byCategory = useMemo(() => {
     const map = new Map<string, { count: number; qty: number; value: number }>();
@@ -54,7 +71,7 @@ export default function Reports() {
         <TabsList className="flex-wrap h-auto">
           <TabsTrigger value="issued">Issued to Officer</TabsTrigger>
           <TabsTrigger value="overdue">Overdue ({overdue.length})</TabsTrigger>
-          <TabsTrigger value="reorder">Reorder ({lowStock.length})</TabsTrigger>
+          <TabsTrigger value="reorder">Reorder ({reorderRows.length})</TabsTrigger>
           <TabsTrigger value="expiring">Expiring ({expiring.length})</TabsTrigger>
           <TabsTrigger value="totals">Inventory Totals</TabsTrigger>
         </TabsList>
@@ -104,12 +121,12 @@ export default function Reports() {
 
         {/* Reorder */}
         <TabsContent value="reorder" className="mt-4">
-          <ReportShell title="Reorder List (at/below PAR)" onExport={() => exportCsv("reorder.csv", lowStock.map((i) => ({
-            Item: i.name, OnHand: i.onHand, PAR: i.parLevel, Suggested: Math.max(i.parLevel - i.onHand, 0), Vendor: i.vendor, UnitCost: i.unitCost,
+          <ReportShell title="Reorder List (at/below PAR)" onExport={() => exportCsv("reorder.csv", reorderRows.map((r) => ({
+            Item: r.name, OnHand: r.onHand, PAR: r.par, Suggested: r.reorder, Vendor: r.vendor,
           })))}>
-            {lowStock.length === 0 ? <EmptyState title="Stock levels healthy" /> : (
+            {reorderRows.length === 0 ? <EmptyState title="Stock levels healthy" /> : (
               <SimpleTable head={["Item", "On Hand", "PAR", "Reorder Qty", "Vendor"]}
-                rows={lowStock.map((i) => [i.name, <Pill tone="amber">{i.onHand}</Pill>, String(i.parLevel), String(Math.max(i.parLevel - i.onHand, 0)), i.vendor ?? "—"])} />
+                rows={reorderRows.map((r) => [r.name, <Pill tone="amber">{r.onHand}</Pill>, String(r.par), String(r.reorder), r.vendor])} />
             )}
           </ReportShell>
         </TabsContent>

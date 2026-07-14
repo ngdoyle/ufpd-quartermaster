@@ -4,7 +4,7 @@
 // A field either binds to a core item column (`bind`) or is stored in
 // the item's `attributes` JSON blob (no `bind`).
 // ------------------------------------------------------------------
-import type { Item } from "@shared/schema";
+import type { Item, Officer } from "@shared/schema";
 
 export const ITEM_CATEGORIES = [
   "Firearms",
@@ -205,6 +205,28 @@ export function parseAttributes(raw?: string | null): Record<string, string> {
     }
   } catch { /* ignore malformed */ }
   return {};
+}
+
+// Map a sized item to the officer profile size field it most likely draws from.
+// Keywords are checked against the item's name + subcategory + category so the
+// issue page can pre-suggest the officer's recorded size. Returns the officer's
+// size string for that field, or null when there is no confident match.
+export function officerSizeForItem(
+  item: Pick<Item, "name" | "category" | "subcategory">,
+  officer: Pick<Officer, "shirtSize" | "pantsSize" | "jacketSize" | "shoeSize" | "vestSize" | "hatSize" | "gloveSize">,
+): string | null {
+  const hay = `${item.name} ${item.subcategory ?? ""} ${item.category ?? ""}`.toLowerCase();
+  const has = (...words: string[]) => words.some((w) => hay.includes(w));
+  let size: string | null | undefined;
+  if (has("glove")) size = officer.gloveSize;
+  else if (has("hat", "cap")) size = officer.hatSize;
+  else if (has("vest", "carrier", "armor")) size = officer.vestSize;
+  else if (has("boot", "shoe", "footwear")) size = officer.shoeSize;
+  else if (has("jacket", "coat", "sweater", "raincoat")) size = officer.jacketSize;
+  else if (has("pant", "trouser", "short")) size = officer.pantsSize;
+  else if (has("shirt")) size = officer.shirtSize;
+  const trimmed = (size ?? "").trim();
+  return trimmed || null;
 }
 
 /** Build a short human-readable summary of an item's dynamic attributes for list views. */

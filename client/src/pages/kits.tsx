@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient, errorMessage } from "@/lib/queryClient";
 import { useApp } from "@/lib/app-context";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
-import type { Officer, Item, ItemUnit } from "@shared/schema";
+import type { Officer, Item, ItemUnit, ItemVariant } from "@shared/schema";
 import { isDualSerialItem } from "@/components/serial-units-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +38,7 @@ export default function Kits() {
   const [issueKit, setIssueKit] = useState<KitWithItems | null>(null);
   const [issueOfficer, setIssueOfficer] = useState("");
   const [unitSelections, setUnitSelections] = useState<Record<number, string>>({});
+  const [variantSelections, setVariantSelections] = useState<Record<number, string>>({});
   const [issuing, setIssuing] = useState(false);
 
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
@@ -45,8 +46,11 @@ export default function Kits() {
   // Serialized (`unique`) items in the kit being issued — each needs a unit pick.
   const serializedLines = (issueKit?.items ?? []).filter((l) => itemById(l.itemId)?.type === "unique");
   const allSerialsChosen = serializedLines.every((l) => unitSelections[l.itemId]);
+  // Sized (`sized`) items in the kit — each offers a size pick. Unlike serials,
+  // a missing pick doesn't block the whole kit: the server skips only that line.
+  const sizedLines = (issueKit?.items ?? []).filter((l) => itemById(l.itemId)?.type === "sized");
 
-  function openIssue(k: KitWithItems) { setIssueKit(k); setIssueOfficer(""); setUnitSelections({}); }
+  function openIssue(k: KitWithItems) { setIssueKit(k); setIssueOfficer(""); setUnitSelections({}); setVariantSelections({}); }
 
   async function saveKit() {
     const valid = lines.filter((l) => l.itemId);
@@ -78,17 +82,20 @@ export default function Kits() {
     try {
       const selections: Record<number, number> = {};
       for (const [k, v] of Object.entries(unitSelections)) selections[Number(k)] = Number(v);
+      const vSelections: Record<number, number> = {};
+      for (const [k, v] of Object.entries(variantSelections)) if (v) vSelections[Number(k)] = Number(v);
       const res = await apiRequest("POST", `/api/kits/${issueKit.id}/issue`, {
-        officerId: Number(issueOfficer), issuedBy: user?.name, unitSelections: selections,
+        officerId: Number(issueOfficer), issuedBy: user?.name, unitSelections: selections, variantSelections: vSelections,
       });
       const r = await res.json();
       ["/api/assignments", "/api/items", "/api/dashboard"].forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
       serializedLines.forEach((l) => queryClient.invalidateQueries({ queryKey: ["/api/items", l.itemId, "units"] }));
+      sizedLines.forEach((l) => queryClient.invalidateQueries({ queryKey: ["/api/items", l.itemId, "variants"] }));
       toast({
         title: `Kit issued — ${r.issued} items`,
         description: r.skipped?.length ? `Skipped: ${r.skipped.join(", ")}` : undefined,
       });
-      setIssueKit(null); setIssueOfficer(""); setUnitSelections({});
+      setIssueKit(null); setIssueOfficer(""); setUnitSelections({}); setVariantSelections({});
     } catch (e: any) {
       toast({ title: "Issue failed", description: errorMessage(e), variant: "destructive" });
     } finally { setIssuing(false); }
@@ -192,6 +199,22 @@ export default function Kits() {
                 })}
               </div>
             )}
+            {sizedLines.length > 0 && (
+              <div className="space-y-3 border-t border-border pt-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sized items — pick a size</p>
+                {sizedLines.map((l) => {
+                  const item = itemById(l.itemId)!;
+                  return (
+                    <KitVariantPicker
+                      key={l.itemId}
+                      item={item}
+                      value={variantSelections[l.itemId] ?? ""}
+                      onChange={(v) => setVariantSelections((s) => ({ ...s, [l.itemId]: v }))}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIssueKit(null)}>Cancel</Button>
@@ -221,6 +244,29 @@ function KitUnitPicker({ item, value, onChange }: { item: Item; value: string; o
         <Select value={value} onValueChange={onChange}>
           <SelectTrigger data-testid={`select-kit-unit-${item.id}`}><SelectValue placeholder="Select serial…" /></SelectTrigger>
           <SelectContent>{inStock.map((u) => <SelectItem key={u.id} value={String(u.id)}>{label(u)}</SelectItem>)}</SelectContent>
+        </Select>
+      )}
+    </div>
+  );
+}
+
+// Per-sized-item size picker for the kit issue flow. Lists the item's in-stock
+// sizes; if none have stock it warns, and leaving it unselected simply skips
+// that line server-side (the rest of the kit still issues).
+function KitVariantPicker({ item, value, onChange }: { item: Item; value: string; onChange: (v: string) => void }) {
+  const { data: variants } = useQuery<ItemVariant[]>({ queryKey: ["/api/items", item.id, "variants"] });
+  const inStock = (variants ?? []).filter((v) => v.quantity > 0);
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">{item.name}</Label>
+      {inStock.length === 0 ? (
+        <p className="rounded-md bg-destructive/10 p-2.5 text-xs text-destructive" data-testid={`text-kit-no-sizes-${item.id}`}>
+          No {item.name} sizes in stock — add stock or remove it from the kit.
+        </p>
+      ) : (
+        <Select value={value} onValueChange={onChange}>
+          <SelectTrigger data-testid={`select-kit-size-${item.id}`}><SelectValue placeholder="Select size…" /></SelectTrigger>
+          <SelectContent>{inStock.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.size} — {v.quantity} avail</SelectItem>)}</SelectContent>
         </Select>
       )}
     </div>

@@ -6,6 +6,7 @@ import {
   insertOfficerSchema, insertItemSchema, insertUserSchema,
   insertKitSchema, computeStock,
 } from "@shared/schema";
+import type { InsertItemVariant } from "@shared/schema";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
@@ -182,15 +183,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/items", async (_req, res) => {
     const list = await storage.listItems();
     const counts = await storage.unitStatusCountsByItem();
+    const variantCounts = await storage.variantCountsByItem();
     // Attach per-unit status counts to serialized items so the UI can show a
-    // breakdown (e.g. "1 In Stock" + "1 Issued") and filter accurately, plus
-    // computed onHand/lowStock (single source of truth — see computeStock).
+    // breakdown (e.g. "1 In Stock" + "1 Issued") and filter accurately; attach
+    // the per-size rollup to sized items (total + each size) so onHand is the
+    // sum of variant quantities. Both feed computed onHand/lowStock (single
+    // source of truth — see computeStock).
     const out = list.map((i) => {
       const unitCounts = i.type === "unique"
         ? counts[i.id] ?? { total: 0, in_stock: 0, issued: 0, maintenance: 0, retired: 0 }
         : undefined;
-      const { onHand, lowStock } = computeStock(i, unitCounts);
-      return unitCounts ? { ...i, unitCounts, onHand, lowStock } : { ...i, onHand, lowStock };
+      const vCounts = i.type === "sized"
+        ? variantCounts[i.id] ?? { total: 0, sizes: [] }
+        : undefined;
+      const { onHand, lowStock } = computeStock(i, unitCounts, vCounts);
+      return {
+        ...i,
+        ...(unitCounts ? { unitCounts } : {}),
+        ...(vCounts ? { variantCounts: vCounts } : {}),
+        onHand, lowStock,
+      };
     });
     res.json(out);
   });
@@ -207,12 +219,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.json(i);
     } catch (e) { handleErr(e, res); }
   });
-  // Bulk import inventory items from parsed CSV rows
+  // Bulk import inventory items from parsed CSV rows.
+  //  - Non-sized rows: one item per row (unchanged behavior).
+  //  - Sized rows (Type "sized"/"clothing"): grouped by (Name, Category)
+  //    case-insensitively into ONE item with one variant per row. Rows missing
+  //    a size are reported as errors; duplicate sizes within a group merge by
+  //    summing quantity; if a matching sized item already exists, variants are
+  //    added/merged into it instead of creating a duplicate item.
   app.post("/api/items/bulk", writeGuard, async (req, res) => {
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
     const errors: { row: number; message: string }[] = [];
     let created = 0;
+
+    const SIZED_ALIASES = new Set(["sized", "clothing"]);
+    const isSized = (r: any) => SIZED_ALIASES.has(String(r?.type ?? "").trim().toLowerCase());
+    const normReturn = (v: unknown) => String(v ?? "").trim().toLowerCase() === "consumable" ? "consumable" : "returnable";
+
+    // --- non-sized rows: unchanged one-item-per-row behavior ---
     for (let i = 0; i < rows.length; i++) {
+      if (isSized(rows[i])) continue;
       try {
         const data = insertItemSchema.parse(rows[i]);
         if (!data.name) throw new Error("Name is required.");
@@ -222,6 +247,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         errors.push({ row: i + 2, message: zMsg(e) });
       }
     }
+
+    // --- sized rows: group by (name, category) case-insensitive ---
+    type SizeAgg = { size: string; quantity: number; parLevel: number; sku: string | null };
+    type Group = { name: string; category: string; returnBehavior: string; template: any; firstRow: number; rowCount: number; sizes: Map<string, SizeAgg> };
+    const groups = new Map<string, Group>();
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!isSized(r)) continue;
+      const rowNum = i + 2;
+      const name = String(r.name ?? "").trim();
+      const category = String(r.category ?? "General").trim() || "General";
+      if (!name) { errors.push({ row: rowNum, message: "Name is required." }); continue; }
+      const size = String(r.size ?? "").trim();
+      if (!size) { errors.push({ row: rowNum, message: "Size is required for sized/clothing items." }); continue; }
+      const key = `${name.toLowerCase()}||${category.toLowerCase()}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = { name, category, returnBehavior: normReturn(r.returnBehavior), template: r, firstRow: rowNum, rowCount: 0, sizes: new Map() };
+        groups.set(key, g);
+      }
+      const sizeKey = size.toLowerCase();
+      const qty = Number(r.quantity) || 0;
+      const par = Number(r.parLevel) || 0;
+      const sku = r.sku != null && String(r.sku).trim() !== "" ? String(r.sku).trim() : null;
+      const existing = g.sizes.get(sizeKey);
+      if (existing) existing.quantity += qty; // merge duplicate size within group
+      else g.sizes.set(sizeKey, { size, quantity: qty, parLevel: par, sku });
+      g.rowCount++;
+    }
+
+    // --- create/merge each sized group ---
+    for (const g of Array.from(groups.values())) {
+      try {
+        const all = await storage.listItems();
+        let item = all.find((it) =>
+          it.type === "sized" &&
+          it.name.trim().toLowerCase() === g.name.toLowerCase() &&
+          (it.category ?? "").trim().toLowerCase() === g.category.toLowerCase());
+        if (!item) {
+          const base = insertItemSchema.parse({
+            ...g.template, type: "sized", quantity: 0, parLevel: 0, size: "", returnBehavior: g.returnBehavior,
+          });
+          item = await storage.createItem(base);
+        }
+        const existingVariants = await storage.listVariants(item.id);
+        for (const s of Array.from(g.sizes.values())) {
+          const match = existingVariants.find((v) => v.size.trim().toLowerCase() === s.size.toLowerCase());
+          if (match) await storage.updateVariant(match.id, { quantity: match.quantity + s.quantity });
+          else existingVariants.push(await storage.createVariant({ itemId: item.id, size: s.size, sku: s.sku, quantity: s.quantity, parLevel: s.parLevel, notes: null }));
+        }
+        created += g.rowCount;
+      } catch (e) {
+        errors.push({ row: g.firstRow, message: `${g.name}: ${zMsg(e)}` });
+      }
+    }
+
     await audit("bulk_import_items", "item", undefined, `Bulk imported ${created} item(s), ${errors.length} skipped`, req.body.actor);
     res.json({ created, errors });
   });
@@ -308,15 +389,99 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  /* ------------------------ SIZE VARIANTS ------------------------- */
+  // List the size variants belonging to a `sized` item.
+  app.get("/api/items/:id/variants", async (req, res) => {
+    res.json(await storage.listVariants(Number(req.params.id)));
+  });
+
+  const normSize = (s: unknown) => String(s ?? "").trim();
+
+  // Create a size variant. Rejects a duplicate size (case-insensitive) on the
+  // same item with 409 so stock is never split across two rows for one size.
+  app.post("/api/items/:id/variants", writeGuard, async (req, res) => {
+    try {
+      const itemId = Number(req.params.id);
+      const item = await storage.getItem(itemId);
+      if (!item) return res.status(404).json({ message: "Item not found." });
+      const body = req.body ?? {};
+      const size = normSize(body.size);
+      if (!size) return res.status(400).json({ message: "Size is required." });
+      const existing = await storage.listVariants(itemId);
+      if (existing.some((v) => v.size.trim().toLowerCase() === size.toLowerCase()))
+        return res.status(409).json({ message: `Size "${size}" already exists for this item.` });
+      const payload: InsertItemVariant = {
+        itemId,
+        size,
+        sku: body.sku != null && String(body.sku).trim() !== "" ? String(body.sku).trim() : null,
+        quantity: Number(body.quantity) || 0,
+        parLevel: Number(body.parLevel) || 0,
+        notes: body.notes ?? null,
+      };
+      const v = await storage.createVariant(payload);
+      await audit("add_variant", "item", itemId, `Added size ${size} to "${item.name}" (qty ${v.quantity})`, body.actor);
+      res.json(v);
+    } catch (e) { handleErr(e, res); }
+  });
+
+  app.patch("/api/variants/:id", writeGuard, async (req, res) => {
+    try {
+      const variant = await storage.getVariant(Number(req.params.id));
+      if (!variant) return res.status(404).json({ message: "Size not found." });
+      const { actor, itemId: _itemId, ...rest } = req.body ?? {};
+      const patch: Partial<InsertItemVariant> = {};
+      if (rest.size != null) {
+        const size = normSize(rest.size);
+        if (!size) return res.status(400).json({ message: "Size is required." });
+        // Reject a rename that collides with another size on the same item.
+        const siblings = await storage.listVariants(variant.itemId);
+        if (siblings.some((v) => v.id !== variant.id && v.size.trim().toLowerCase() === size.toLowerCase()))
+          return res.status(409).json({ message: `Size "${size}" already exists for this item.` });
+        patch.size = size;
+      }
+      if (rest.sku !== undefined) patch.sku = rest.sku != null && String(rest.sku).trim() !== "" ? String(rest.sku).trim() : null;
+      if (rest.quantity !== undefined) patch.quantity = Math.max(0, Number(rest.quantity) || 0);
+      if (rest.parLevel !== undefined) patch.parLevel = Math.max(0, Number(rest.parLevel) || 0);
+      if (rest.notes !== undefined) patch.notes = rest.notes ?? null;
+      const updated = await storage.updateVariant(variant.id, patch);
+      const item = await storage.getItem(variant.itemId);
+      await audit("update_variant", "item", variant.itemId, `Updated size ${updated?.size ?? variant.size} on "${item?.name ?? `#${variant.itemId}`}"`, actor);
+      res.json(updated);
+    } catch (e) { handleErr(e, res); }
+  });
+
+  app.delete("/api/variants/:id", writeGuard, async (req, res) => {
+    const variant = await storage.getVariant(Number(req.params.id));
+    if (!variant) return res.status(404).json({ message: "Size not found." });
+    // Block deletion while any ACTIVE assignment still references this size.
+    const active = await storage.listActiveAssignments();
+    if (active.some((a) => a.itemVariantId === variant.id))
+      return res.status(409).json({ message: "Cannot delete: this size is currently issued to one or more officers." });
+    await storage.deleteVariant(variant.id);
+    const item = await storage.getItem(variant.itemId);
+    await audit("delete_variant", "item", variant.itemId, `Removed size ${variant.size} from "${item?.name ?? `#${variant.itemId}`}"`, req.query.actor as string);
+    res.json({ ok: true });
+  });
+
   /* ----------------------- ASSIGNMENTS / I-R ---------------------- */
-  app.get("/api/assignments", async (_req, res) => res.json(await storage.listAssignments()));
+  app.get("/api/assignments", async (_req, res) => {
+    const list = await storage.listAssignments();
+    // Attach the size label for sized assignments so the UI can show it without
+    // a per-row variant fetch. Look up each referenced variant once.
+    const sizeById = new Map<number, string>();
+    for (const id of Array.from(new Set(list.map((a) => a.itemVariantId).filter((v): v is number => v != null)))) {
+      const v = await storage.getVariant(id);
+      if (v) sizeById.set(id, v.size);
+    }
+    res.json(list.map((a) => ({ ...a, variantSize: a.itemVariantId != null ? sizeById.get(a.itemVariantId) ?? null : null })));
+  });
 
   // Issue an item to an officer
   app.post("/api/issue", writeGuard, async (req, res) => {
     try {
       const schema = z.object({
         itemId: z.number(), officerId: z.number(), quantity: z.number().min(1).default(1),
-        itemUnitId: z.number().nullish(),
+        itemUnitId: z.number().nullish(), itemVariantId: z.number().nullish(),
         conditionOut: z.string().optional(), dueDate: z.string().nullish(),
         issuedBy: z.string().optional(), signature: z.string().optional(), notes: z.string().optional(),
       });
@@ -327,7 +492,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!officer) return res.status(404).json({ message: "Officer not found." });
 
       let itemUnitId: number | null = null;
-      if (item.type === "unique") {
+      let itemVariantId: number | null = null;
+      if (item.type === "sized") {
+        // Sized items are issued against a specific size; stock lives on the
+        // variant, so decrement the variant and never touch item.quantity.
+        const variant = d.itemVariantId ? await storage.getVariant(d.itemVariantId) : undefined;
+        if (!variant || variant.itemId !== item.id)
+          return res.status(400).json({ message: "Select a size to issue." });
+        if (variant.quantity < d.quantity)
+          return res.status(409).json({ message: `Only ${variant.quantity} of size ${variant.size} in stock.` });
+        await storage.updateVariant(variant.id, { quantity: variant.quantity - d.quantity });
+        itemVariantId = variant.id;
+      } else if (item.type === "unique") {
         const units = await storage.listUnitsByItem(item.id);
         // Serialized items with tracked units must be issued by specific unit.
         if (units.length > 0) {
@@ -348,14 +524,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         await storage.updateItem(item.id, { quantity: item.quantity - d.quantity });
       }
       const a = await storage.createAssignment({
-        itemId: d.itemId, itemUnitId: itemUnitId as any, officerId: d.officerId, quantity: d.quantity, status: "active",
+        itemId: d.itemId, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any, officerId: d.officerId, quantity: d.quantity, status: "active",
         conditionOut: d.conditionOut ?? item.condition ?? "New", conditionIn: null as any,
         issuedAt: nowISO(), dueDate: d.dueDate ?? null as any, returnedAt: null as any,
         issuedBy: d.issuedBy ?? null as any, returnedBy: null as any,
         signature: d.signature ?? null as any, notes: d.notes ?? null as any,
       });
+      const sizeSuffix = itemVariantId ? ` (size ${(await storage.getVariant(itemVariantId))?.size})` : "";
       await audit("issue", "assignment", a.id,
-        `Issued ${d.quantity}x "${item.name}" to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})`, d.issuedBy);
+        `Issued ${d.quantity}x "${item.name}"${sizeSuffix} to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})`, d.issuedBy);
       res.json(a);
     } catch (e) { handleErr(e, res); }
   });
@@ -375,7 +552,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         status: "returned", conditionIn: condition, returnedAt: nowISO(),
         returnedBy: returnedBy ?? null, notes: notes ?? a.notes,
       });
-      if (item && item.type === "unique" && a.itemUnitId) {
+      if (item && item.type === "sized" && a.itemVariantId) {
+        // Sized return: restock the specific size only when the item is
+        // configured returnable. Consumable sized items are marked returned but
+        // never restocked (mirrors non-sized consumable behavior).
+        if ((item.returnBehavior ?? "returnable") === "returnable") {
+          const variant = await storage.getVariant(a.itemVariantId);
+          if (variant) await storage.updateVariant(variant.id, { quantity: variant.quantity + a.quantity });
+        }
+      } else if (item && item.type === "unique" && a.itemUnitId) {
         // Serialized return: flip the specific unit back, then let the item
         // quantity/status re-derive from its units.
         await storage.updateUnit(a.itemUnitId, {
@@ -442,6 +627,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const kitId = Number(req.params.id);
       const { officerId, issuedBy, dueDate, signature, notes } = req.body ?? {};
       const unitSelections: Record<string, number> = req.body?.unitSelections ?? {};
+      const variantSelections: Record<string, number> = req.body?.variantSelections ?? {};
       const officer = await storage.getOfficer(Number(officerId));
       if (!officer) return res.status(404).json({ message: "Officer not found." });
       const lines = await storage.listKitItems(kitId);
@@ -468,16 +654,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const item = await storage.getItem(line.itemId);
         if (!item) continue;
         let itemUnitId: number | null = null;
+        let itemVariantId: number | null = null;
         if (item.type === "unique") {
           const unit = unitByItem[item.id];
           await storage.updateUnit(unit.id, { status: "issued", assignedOfficerId: officer.id });
           itemUnitId = unit.id;
+        } else if (item.type === "sized") {
+          // Sized kit lines need a per-item size pick; a missing/invalid or
+          // out-of-stock pick fails just that line so the rest still issue.
+          const chosenId = variantSelections[String(item.id)];
+          const variant = chosenId ? await storage.getVariant(Number(chosenId)) : undefined;
+          if (!variant || variant.itemId !== item.id) { skipped.push(`${item.name} (no size selected)`); continue; }
+          if (variant.quantity < line.quantity) { skipped.push(`${item.name} size ${variant.size} (insufficient stock)`); continue; }
+          await storage.updateVariant(variant.id, { quantity: variant.quantity - line.quantity });
+          itemVariantId = variant.id;
         } else {
           if (item.quantity < line.quantity) { skipped.push(`${item.name} (insufficient stock)`); continue; }
           await storage.updateItem(item.id, { quantity: item.quantity - line.quantity });
         }
         const a = await storage.createAssignment({
-          itemId: item.id, itemUnitId: itemUnitId as any, officerId: officer.id, quantity: line.quantity, status: "active",
+          itemId: item.id, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any, officerId: officer.id, quantity: line.quantity, status: "active",
           conditionOut: item.condition ?? "New", conditionIn: null as any,
           issuedAt: nowISO(), dueDate: dueDate ?? null as any, returnedAt: null as any,
           issuedBy: issuedBy ?? null as any, returnedBy: null as any,
@@ -534,9 +730,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const in90 = new Date(); in90.setDate(today.getDate() + 90);
 
     const counts = await storage.unitStatusCountsByItem();
+    const variantCounts = await storage.variantCountsByItem();
     const withStock = allItems.map(i => {
       const uc = i.type === "unique" ? counts[i.id] : undefined;
-      return { ...i, ...computeStock(i, uc) };
+      const vc = i.type === "sized" ? variantCounts[i.id] : undefined;
+      return { ...i, ...computeStock(i, uc, vc) };
     });
     const lowStock = withStock.filter(i => i.lowStock);
     const expiring = allItems.filter(i => i.expirationDate && new Date(i.expirationDate) <= in90);
