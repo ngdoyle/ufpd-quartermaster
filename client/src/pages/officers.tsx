@@ -15,8 +15,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Pencil, Download, Upload, Shirt, Mail, Phone, Package } from "lucide-react";
+import { Plus, Search, Pencil, Download, Upload, Shirt, Mail, Phone, Package, LayoutGrid, List, ArrowUpAZ, ArrowDownAZ } from "lucide-react";
 import { MultiSelect } from "@/components/multi-select";
 import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { RANKS, UNITS, parseUnits, joinUnits, UNIT_CSV_SEPARATOR } from "@/lib/constants";
@@ -39,12 +40,40 @@ export default function Officers() {
   const [detail, setDetail] = useState<Officer | null>(null);
   const [saving, setSaving] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [view, setView] = useState<"cards" | "rows">("cards");
+  const [rankFilter, setRankFilter] = useState("all");
+  const [unitFilter, setUnitFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sortKey, setSortKey] = useState<"lastName" | "firstName" | "rank" | "badgeNumber" | "unit">("lastName");
+  const [sortAsc, setSortAsc] = useState(true);
 
   const filtered = useMemo(() => {
     if (!officers) return [];
     const t = q.toLowerCase();
-    return officers.filter((o) => !t || [o.firstName, o.lastName, o.badgeNumber, o.unit, o.rank].some((f) => f?.toLowerCase().includes(t)));
-  }, [officers, q]);
+    const matched = officers.filter((o) => {
+      if (t && ![o.firstName, o.lastName, o.badgeNumber, o.unit, o.rank].some((f) => f?.toLowerCase().includes(t))) return false;
+      if (rankFilter !== "all" && o.rank !== rankFilter) return false;
+      if (unitFilter !== "all" && !parseUnits(o.unit).includes(unitFilter)) return false;
+      if (statusFilter !== "all" && o.status !== statusFilter) return false;
+      return true;
+    });
+    const cmp = (a: Officer, b: Officer) => {
+      let r: number;
+      if (sortKey === "rank") {
+        const ai = RANKS.indexOf(a.rank as any), bi = RANKS.indexOf(b.rank as any);
+        r = (ai === -1 ? RANKS.length : ai) - (bi === -1 ? RANKS.length : bi);
+      } else if (sortKey === "badgeNumber") {
+        const an = Number(a.badgeNumber), bn = Number(b.badgeNumber);
+        r = (a.badgeNumber !== "" && b.badgeNumber !== "" && !isNaN(an) && !isNaN(bn))
+          ? an - bn
+          : (a.badgeNumber ?? "").localeCompare(b.badgeNumber ?? "", undefined, { sensitivity: "base" });
+      } else {
+        r = (a[sortKey] ?? "").localeCompare(b[sortKey] ?? "", undefined, { sensitivity: "base" });
+      }
+      return sortAsc ? r : -r;
+    };
+    return [...matched].sort(cmp);
+  }, [officers, q, rankFilter, unitFilter, statusFilter, sortKey, sortAsc]);
 
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
   const itemById = (id: number) => items?.find((i) => i.id === id);
@@ -85,16 +114,98 @@ export default function Officers() {
         </>} />
 
       <Card className="mb-4 p-3">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input className="pl-8" placeholder="Search by name, badge, unit…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="input-search-officers" />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[200px] flex-1">
+            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input className="pl-8" placeholder="Search by name, badge, unit…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="input-search-officers" />
+          </div>
+
+          <Select value={rankFilter} onValueChange={setRankFilter}>
+            <SelectTrigger className="h-9 w-[130px]" data-testid="select-filter-rank"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Ranks</SelectItem>
+              {RANKS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+            </SelectContent>
+          </Select>
+
+          <Select value={unitFilter} onValueChange={setUnitFilter}>
+            <SelectTrigger className="h-9 w-[130px]" data-testid="select-filter-unit"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Units</SelectItem>
+              {UNITS.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+            </SelectContent>
+          </Select>
+
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="h-9 w-[120px]" data-testid="select-filter-status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="inactive">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <div className="flex items-center gap-1">
+            <Select value={sortKey} onValueChange={(v) => setSortKey(v as typeof sortKey)}>
+              <SelectTrigger className="h-9 w-[140px]" data-testid="select-sort-officers"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="lastName">Last Name</SelectItem>
+                <SelectItem value="firstName">First Name</SelectItem>
+                <SelectItem value="rank">Rank</SelectItem>
+                <SelectItem value="badgeNumber">ID / Badge #</SelectItem>
+                <SelectItem value="unit">Unit</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="ghost" size="icon" className="h-9 w-9" onClick={() => setSortAsc((v) => !v)}
+              aria-label={sortAsc ? "Sort ascending" : "Sort descending"} data-testid="button-sort-direction">
+              {sortAsc ? <ArrowUpAZ className="h-4 w-4" /> : <ArrowDownAZ className="h-4 w-4" />}
+            </Button>
+          </div>
+
+          <div className="flex items-center rounded-md border border-border">
+            <Button variant={view === "cards" ? "default" : "ghost"} size="icon" className="h-9 w-9 rounded-r-none"
+              onClick={() => setView("cards")} aria-label="Card view" data-testid="button-view-cards">
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button variant={view === "rows" ? "default" : "ghost"} size="icon" className="h-9 w-9 rounded-l-none"
+              onClick={() => setView("rows")} aria-label="Table view" data-testid="button-view-rows">
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </Card>
 
       {isLoading ? (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>
       ) : filtered.length === 0 ? (
-        <EmptyState title="No officers found" />
+        <EmptyState title="No officers found" hint="No officers match your filters" />
+      ) : view === "rows" ? (
+        <Card className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Badge #</TableHead>
+                <TableHead>Rank</TableHead>
+                <TableHead>Unit(s)</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Items Issued</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((o) => (
+                <TableRow key={o.id} className="cursor-pointer" onClick={() => setDetail(o)} data-testid={`row-officer-${o.id}`}>
+                  <TableCell className="font-medium">{o.firstName} {o.lastName}</TableCell>
+                  <TableCell className="text-muted-foreground">#{o.badgeNumber}</TableCell>
+                  <TableCell>{o.rank}</TableCell>
+                  <TableCell className="text-muted-foreground">{o.unit || "—"}</TableCell>
+                  <TableCell><StatusBadge status={o.status} /></TableCell>
+                  <TableCell className="text-right">{activeFor(o.id).length}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((o) => {
