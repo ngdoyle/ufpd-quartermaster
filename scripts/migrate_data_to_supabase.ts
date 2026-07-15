@@ -36,8 +36,14 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error("[migrate] SUPABASE_URL and SUPABASE_ANON_KEY must be set in the environment (.env).");
   process.exit(1);
 }
+// Mirror server/supabase.ts: send the RLS shared secret when configured so this
+// loader works against a hardened project (supabase/hardening.sql).
+const APP_DB_SECRET = process.env.APP_DB_SECRET;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
+  ...(APP_DB_SECRET
+    ? { global: { headers: { "x-app-secret": APP_DB_SECRET } } }
+    : {}),
 });
 
 // ---- CLI args ----

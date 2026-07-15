@@ -24,6 +24,12 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   );
 }
 
+// Shared secret for RLS hardening (supabase/hardening.sql). When set, it is sent
+// on every PostgREST/RPC request as `x-app-secret`; the RLS policies gate all
+// table access on it matching the value stored in `private.app_config`. Left
+// unset for local flexibility (RLS not yet applied) — the app still works.
+const APP_DB_SECRET = process.env.APP_DB_SECRET;
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: false,
@@ -34,6 +40,9 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   // never used (database-only access via PostgREST/RPC), but the constructor
   // must not throw at startup.
   realtime: { transport: ws as unknown as typeof WebSocket },
+  ...(APP_DB_SECRET
+    ? { global: { headers: { "x-app-secret": APP_DB_SECRET } } }
+    : {}),
 });
 
 // Unwrap a PostgREST single/maybe result, throwing on error so callers can rely
