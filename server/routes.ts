@@ -6,7 +6,8 @@ import {
   insertOfficerSchema, insertItemSchema, insertUserSchema,
   insertKitSchema, computeStock,
 } from "@shared/schema";
-import type { InsertItemVariant } from "@shared/schema";
+import type { InsertItemVariant, InsertAssignment, Officer } from "@shared/schema";
+import type { IssueBatchPlan } from "./storage";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
@@ -49,6 +50,108 @@ const loginLimiter = rateLimit({
 
 async function audit(action: string, entity: string, entityId: number | undefined, detail: string, username?: string) {
   await storage.addAudit({ action, entity, entityId: entityId ?? null as any, detail, username: username ?? null as any, timestamp: nowISO() });
+}
+
+type IssueLineInput = { itemId: number; quantity: number; itemUnitId?: number | null; itemVariantId?: number | null };
+type IssueOpts = { dueDate?: string | null; signature?: string; notes?: string; conditionOut?: string; issuedBy?: string };
+type PlanLineError = { index: number; message: string; code: number };
+type IssuePlanResult =
+  | ({ ok: true; auditDetails: string[] } & IssueBatchPlan)
+  | { ok: false; errors: PlanLineError[] };
+
+// Shared issue planner used by both POST /api/issue (single line) and
+// POST /api/issue/batch. Validates every line against current stock — with no
+// writes — while aggregating duplicate lines (same variant / same item) and
+// reserving serialized units across the whole batch. On success it returns
+// pre-computed, aggregated stock deltas plus one assignment per line, ready to
+// hand to storage.issueBatch. On failure it returns every failing line so the
+// caller can reject the whole batch (all-or-nothing).
+async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueOpts): Promise<IssuePlanResult> {
+  const errors: PlanLineError[] = [];
+  const assignments: InsertAssignment[] = [];
+  const auditDetails: string[] = [];
+
+  const itemCache = new Map<number, Awaited<ReturnType<typeof storage.getItem>>>();
+  const unitsCache = new Map<number, Awaited<ReturnType<typeof storage.listUnitsByItem>>>();
+  const variantCache = new Map<number, Awaited<ReturnType<typeof storage.getVariant>>>();
+  const usedUnitIds = new Set<number>();
+  const variantRemaining = new Map<number, number>(); // variantId -> running available
+  const itemRemaining = new Map<number, number>();     // itemId -> running available
+  const itemSetIssued = new Set<number>();             // unit-less unique items to mark "issued"
+
+  const getItemCached = async (id: number) => {
+    if (!itemCache.has(id)) itemCache.set(id, await storage.getItem(id));
+    return itemCache.get(id);
+  };
+  const getUnitsCached = async (id: number) => {
+    if (!unitsCache.has(id)) unitsCache.set(id, await storage.listUnitsByItem(id));
+    return unitsCache.get(id)!;
+  };
+  const getVariantCached = async (id: number) => {
+    if (!variantCache.has(id)) variantCache.set(id, await storage.getVariant(id));
+    return variantCache.get(id);
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fail = (message: string, code: number) => errors.push({ index: i, message, code });
+    const item = await getItemCached(line.itemId);
+    if (!item) { fail("Item not found.", 404); continue; }
+
+    let itemUnitId: number | null = null;
+    let itemVariantId: number | null = null;
+    let sizeSuffix = "";
+
+    if (item.type === "sized") {
+      const variant = line.itemVariantId ? await getVariantCached(line.itemVariantId) : undefined;
+      if (!variant || variant.itemId !== item.id) { fail("Select a size to issue.", 400); continue; }
+      if (!variantRemaining.has(variant.id)) variantRemaining.set(variant.id, variant.quantity);
+      const remaining = variantRemaining.get(variant.id)!;
+      if (remaining < line.quantity) { fail(`Only ${variant.quantity} of size ${variant.size} in stock.`, 409); continue; }
+      variantRemaining.set(variant.id, remaining - line.quantity);
+      itemVariantId = variant.id;
+      sizeSuffix = ` (size ${variant.size})`;
+    } else if (item.type === "unique") {
+      const units = await getUnitsCached(item.id);
+      if (units.length > 0) {
+        const unit = line.itemUnitId ? units.find((u) => u.id === line.itemUnitId) : undefined;
+        if (!unit || unit.itemId !== item.id) { fail("Select a serial/unit to issue.", 400); continue; }
+        if (unit.status !== "in_stock") { fail("That unit is not available to issue.", 400); continue; }
+        if (usedUnitIds.has(unit.id)) { fail("That unit is already selected on another line.", 409); continue; }
+        usedUnitIds.add(unit.id);
+        itemUnitId = unit.id;
+      } else {
+        // Legacy serialized item with no tracked units — fall back to quantity.
+        if (!itemRemaining.has(item.id)) itemRemaining.set(item.id, item.quantity);
+        const remaining = itemRemaining.get(item.id)!;
+        if (remaining < line.quantity) { fail(`Only ${item.quantity} in stock.`, 400); continue; }
+        itemRemaining.set(item.id, remaining - line.quantity);
+        itemSetIssued.add(item.id);
+      }
+    } else {
+      if (!itemRemaining.has(item.id)) itemRemaining.set(item.id, item.quantity);
+      const remaining = itemRemaining.get(item.id)!;
+      if (remaining < line.quantity) { fail(`Only ${item.quantity} in stock.`, 400); continue; }
+      itemRemaining.set(item.id, remaining - line.quantity);
+    }
+
+    assignments.push({
+      itemId: item.id, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any,
+      officerId: officer.id, quantity: line.quantity, status: "active",
+      conditionOut: opts.conditionOut ?? item.condition ?? "New", conditionIn: null as any,
+      issuedAt: nowISO(), dueDate: opts.dueDate ?? null as any, returnedAt: null as any,
+      issuedBy: opts.issuedBy ?? null as any, returnedBy: null as any,
+      signature: opts.signature ?? null as any, notes: opts.notes ?? null as any,
+    });
+    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix} to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})`);
+  }
+
+  if (errors.length) return { ok: false, errors };
+
+  const variantDeltas = Array.from(variantRemaining.entries()).map(([id, newQty]) => ({ id, newQty }));
+  const itemDeltas = Array.from(itemRemaining.entries()).map(([id, newQty]) => ({ id, newQty, setIssued: itemSetIssued.has(id) }));
+  const unitIssues = Array.from(usedUnitIds).map((id) => ({ id, officerId: officer.id }));
+  return { ok: true, variantDeltas, itemDeltas, unitIssues, assignments, auditDetails };
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -486,54 +589,51 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         issuedBy: z.string().optional(), signature: z.string().optional(), notes: z.string().optional(),
       });
       const d = schema.parse(req.body);
-      const item = await storage.getItem(d.itemId);
       const officer = await storage.getOfficer(d.officerId);
-      if (!item) return res.status(404).json({ message: "Item not found." });
       if (!officer) return res.status(404).json({ message: "Officer not found." });
 
-      let itemUnitId: number | null = null;
-      let itemVariantId: number | null = null;
-      if (item.type === "sized") {
-        // Sized items are issued against a specific size; stock lives on the
-        // variant, so decrement the variant and never touch item.quantity.
-        const variant = d.itemVariantId ? await storage.getVariant(d.itemVariantId) : undefined;
-        if (!variant || variant.itemId !== item.id)
-          return res.status(400).json({ message: "Select a size to issue." });
-        if (variant.quantity < d.quantity)
-          return res.status(409).json({ message: `Only ${variant.quantity} of size ${variant.size} in stock.` });
-        await storage.updateVariant(variant.id, { quantity: variant.quantity - d.quantity });
-        itemVariantId = variant.id;
-      } else if (item.type === "unique") {
-        const units = await storage.listUnitsByItem(item.id);
-        // Serialized items with tracked units must be issued by specific unit.
-        if (units.length > 0) {
-          const unit = d.itemUnitId ? await storage.getUnit(d.itemUnitId) : undefined;
-          if (!unit || unit.itemId !== item.id)
-            return res.status(400).json({ message: "Select a serial/unit to issue." });
-          if (unit.status !== "in_stock")
-            return res.status(400).json({ message: "That unit is not available to issue." });
-          await storage.updateUnit(unit.id, { status: "issued", assignedOfficerId: officer.id });
-          itemUnitId = unit.id;
-        } else {
-          // Legacy serialized item with no tracked units — fall back to status.
-          if (item.quantity < d.quantity) return res.status(400).json({ message: `Only ${item.quantity} in stock.` });
-          await storage.updateItem(item.id, { quantity: item.quantity - d.quantity, status: "issued" });
-        }
-      } else {
-        if (item.quantity < d.quantity) return res.status(400).json({ message: `Only ${item.quantity} in stock.` });
-        await storage.updateItem(item.id, { quantity: item.quantity - d.quantity });
-      }
-      const a = await storage.createAssignment({
-        itemId: d.itemId, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any, officerId: d.officerId, quantity: d.quantity, status: "active",
-        conditionOut: d.conditionOut ?? item.condition ?? "New", conditionIn: null as any,
-        issuedAt: nowISO(), dueDate: d.dueDate ?? null as any, returnedAt: null as any,
-        issuedBy: d.issuedBy ?? null as any, returnedBy: null as any,
-        signature: d.signature ?? null as any, notes: d.notes ?? null as any,
-      });
-      const sizeSuffix = itemVariantId ? ` (size ${(await storage.getVariant(itemVariantId))?.size})` : "";
-      await audit("issue", "assignment", a.id,
-        `Issued ${d.quantity}x "${item.name}"${sizeSuffix} to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})`, d.issuedBy);
+      const plan = await planIssue(officer,
+        [{ itemId: d.itemId, quantity: d.quantity, itemUnitId: d.itemUnitId, itemVariantId: d.itemVariantId }],
+        { dueDate: d.dueDate, signature: d.signature, notes: d.notes, conditionOut: d.conditionOut, issuedBy: d.issuedBy });
+      if (!plan.ok) { const e = plan.errors[0]; return res.status(e.code).json({ message: e.message }); }
+
+      const [a] = await storage.issueBatch(plan);
+      await audit("issue", "assignment", a.id, plan.auditDetails[0], d.issuedBy);
       res.json(a);
+    } catch (e) { handleErr(e, res); }
+  });
+
+  // Issue multiple items (a cart) to one officer in a single atomic batch.
+  // Validation is all-or-nothing: if any line is invalid, nothing is written
+  // and every failing line is returned (0-based index into the request lines).
+  app.post("/api/issue/batch", writeGuard, async (req, res) => {
+    try {
+      const schema = z.object({
+        officerId: z.number(),
+        signature: z.string().optional(),
+        dueDate: z.string().nullish(),
+        notes: z.string().optional(),
+        issuedBy: z.string().optional(),
+        lines: z.array(z.object({
+          itemId: z.number(),
+          quantity: z.number().int().positive(),
+          itemUnitId: z.number().nullish(),
+          itemVariantId: z.number().nullish(),
+        })).min(1),
+      });
+      const d = schema.parse(req.body);
+      const officer = await storage.getOfficer(d.officerId);
+      if (!officer) return res.status(404).json({ message: "Officer not found." });
+
+      const plan = await planIssue(officer, d.lines,
+        { dueDate: d.dueDate, signature: d.signature, notes: d.notes, issuedBy: d.issuedBy });
+      if (!plan.ok)
+        return res.status(409).json({ message: "Nothing was issued — one or more lines are invalid.", errors: plan.errors.map((e) => ({ index: e.index, message: e.message })) });
+
+      const created = await storage.issueBatch(plan);
+      for (let i = 0; i < created.length; i++)
+        await audit("issue", "assignment", created[i].id, plan.auditDetails[i], d.issuedBy);
+      res.json({ issued: created.length, assignments: created });
     } catch (e) { handleErr(e, res); }
   });
 

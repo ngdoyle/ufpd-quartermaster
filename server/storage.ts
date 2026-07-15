@@ -208,6 +208,16 @@ export type UnitStatusCounts = {
   retired: number;
 };
 
+// Pre-resolved, aggregated writes for an all-or-nothing multi-line issue.
+// Stock deltas are pre-computed final values (one per distinct target), so the
+// transaction just applies them; one assignment row is inserted per issue line.
+export interface IssueBatchPlan {
+  variantDeltas: { id: number; newQty: number }[];
+  itemDeltas: { id: number; newQty: number; setIssued: boolean }[];
+  unitIssues: { id: number; officerId: number }[];
+  assignments: InsertAssignment[];
+}
+
 export interface IStorage {
   // users
   getUser(id: number): Promise<User | undefined>;
@@ -249,6 +259,7 @@ export interface IStorage {
   getAssignment(id: number): Promise<Assignment | undefined>;
   listAssignmentsByOfficer(officerId: number): Promise<Assignment[]>;
   createAssignment(a: InsertAssignment): Promise<Assignment>;
+  issueBatch(plan: IssueBatchPlan): Promise<Assignment[]>;
   updateAssignment(id: number, a: Partial<InsertAssignment>): Promise<Assignment | undefined>;
   deleteAssignmentsByOfficer(officerId: number): Promise<void>;
   // kits
@@ -418,6 +429,24 @@ export class DatabaseStorage implements IStorage {
   }
   async createAssignment(a: InsertAssignment) {
     return db.insert(assignments).values(a).returning().get();
+  }
+  // Apply a pre-validated batch of issues atomically: all stock decrements and
+  // assignment inserts land together or not at all (see replaceKitItems).
+  async issueBatch(plan: IssueBatchPlan) {
+    return db.transaction((tx) => {
+      for (const v of plan.variantDeltas)
+        tx.update(itemVariants).set({ quantity: v.newQty }).where(eq(itemVariants.id, v.id)).run();
+      for (const it of plan.itemDeltas) {
+        const patch: Partial<InsertItem> = { quantity: it.newQty };
+        if (it.setIssued) patch.status = "issued";
+        tx.update(items).set(patch).where(eq(items.id, it.id)).run();
+      }
+      for (const u of plan.unitIssues)
+        tx.update(itemUnits).set({ status: "issued", assignedOfficerId: u.officerId }).where(eq(itemUnits.id, u.id)).run();
+      const created: Assignment[] = [];
+      for (const a of plan.assignments) created.push(tx.insert(assignments).values(a).returning().get());
+      return created;
+    });
   }
   async updateAssignment(id: number, a: Partial<InsertAssignment>) {
     return db.update(assignments).set(a).where(eq(assignments.id, id)).returning().get();

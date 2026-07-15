@@ -16,9 +16,25 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogFooter,
+  AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
 import { Input as In } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowUpRight, ArrowDownLeft, Search, PackageCheck } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Search, PackageCheck, Plus, Trash2, ShoppingCart } from "lucide-react";
+
+type CartLine = {
+  id: string;
+  itemId: number;
+  itemName: string;
+  categoryLabel: string;
+  quantity: number;
+  itemUnitId?: number;
+  unitSerial?: string;
+  itemVariantId?: number;
+  variantSize?: string;
+};
 
 export default function IssueReturn() {
   const { user } = useApp();
@@ -27,7 +43,7 @@ export default function IssueReturn() {
   const { data: items } = useQuery<ItemWithStock[]>({ queryKey: ["/api/items"] });
   const { data: assignments } = useQuery<(Assignment & { variantSize?: string | null })[]>({ queryKey: ["/api/assignments"] });
 
-  // issue form state
+  // issue form state — the current selection being built into a cart line
   const [officerId, setOfficerId] = useState("");
   const [issueCategory, setIssueCategory] = useState("");
   const [issueSubcategory, setIssueSubcategory] = useState("");
@@ -35,10 +51,16 @@ export default function IssueReturn() {
   const [unitId, setUnitId] = useState("");
   const [variantId, setVariantId] = useState("");
   const [qty, setQty] = useState(1);
+  // cart-level fields (apply to the whole cart / one signature)
   const [dueDate, setDueDate] = useState("");
   const [signature, setSignature] = useState("");
   const [notes, setNotes] = useState("");
   const [issuing, setIssuing] = useState(false);
+  // cart of items to issue together to the selected officer
+  const [lines, setLines] = useState<CartLine[]>([]);
+  const [lineErrors, setLineErrors] = useState<Record<string, string>>({});
+  // officer to switch to, pending confirmation while the cart is non-empty
+  const [pendingOfficer, setPendingOfficer] = useState<string | null>(null);
 
   // return state
   const [returnFor, setReturnFor] = useState<Assignment | null>(null);
@@ -93,13 +115,29 @@ export default function IssueReturn() {
     queryKey: ["/api/items", Number(itemId), "units"],
     enabled: !!isUnique,
   });
-  const inStockUnits = useMemo(() => (selectedUnits ?? []).filter((u) => u.status === "in_stock"), [selectedUnits]);
+  // Cart-aware availability: whatever is already in the cart is reserved, so
+  // subtract it from the serials/sizes/quantities the pickers offer.
+  const cartedUnitIds = useMemo(() => new Set(lines.filter((l) => l.itemUnitId).map((l) => l.itemUnitId!)), [lines]);
+  const cartedVariantQty = (vid: number) => lines.filter((l) => l.itemVariantId === vid).reduce((s, l) => s + l.quantity, 0);
+  const cartedItemQty = (iid: number) => lines.filter((l) => l.itemId === iid && !l.itemUnitId && !l.itemVariantId).reduce((s, l) => s + l.quantity, 0);
+
+  const inStockUnits = useMemo(
+    () => (selectedUnits ?? []).filter((u) => u.status === "in_stock" && !cartedUnitIds.has(u.id)),
+    [selectedUnits, cartedUnitIds],
+  );
   const { data: selectedVariants } = useQuery<ItemVariant[]>({
     queryKey: ["/api/items", Number(itemId), "variants"],
     enabled: !!isSized,
   });
   const inStockVariants = useMemo(() => (selectedVariants ?? []).filter((v) => v.quantity > 0), [selectedVariants]);
+  // Sizes still available after cart reservations, with the adjusted count.
+  const availableVariants = useMemo(
+    () => inStockVariants.map((v) => ({ v, avail: v.quantity - cartedVariantQty(v.id) })).filter((x) => x.avail > 0),
+    [inStockVariants, lines],
+  );
   const selectedVariant = selectedVariants?.find((v) => String(v.id) === variantId);
+  const selectedVariantAvail = selectedVariant ? selectedVariant.quantity - cartedVariantQty(selectedVariant.id) : 0;
+  const selectedItemAvail = selectedItem ? ((selectedItem as ItemWithStock).onHand ?? selectedItem.quantity) - cartedItemQty(selectedItem.id) : 0;
   const selectedOfficer = officers?.find((o) => String(o.id) === officerId);
 
   // Officer-profile auto-suggest: when both a sized item and an officer are
@@ -133,32 +171,110 @@ export default function IssueReturn() {
     return list.filter((a) => itemName(a.itemId).toLowerCase().includes(t) || officerName(a.officerId).toLowerCase().includes(t));
   }, [assignments, q, items, officers]);
 
-  async function doIssue() {
-    if (!officerId || !itemId) return toast({ title: "Select an officer and item", variant: "destructive" });
-    if (isUnique && inStockUnits.length === 0)
-      return toast({ title: "No serial in stock", description: "Add an available unit on the Inventory page first.", variant: "destructive" });
-    if (isUnique && inStockUnits.length > 0 && !unitId)
-      return toast({ title: "Select a serial/unit to issue", variant: "destructive" });
-    if (isSized && inStockVariants.length === 0)
-      return toast({ title: "No size in stock", description: "Add stock for a size on the Inventory page first.", variant: "destructive" });
-    if (isSized && !variantId)
-      return toast({ title: "Select a size to issue", variant: "destructive" });
+  // Reset only the item pickers; officer + category/subcategory are kept so the
+  // user can quickly add several items from the same area to the cart.
+  function resetItemPickers() {
+    setItemId(""); setUnitId(""); setVariantId(""); setQty(1);
+  }
+
+  function addToCart() {
+    if (!officerId || !itemId || !selectedItem) return toast({ title: "Select an officer and item", variant: "destructive" });
+    const categoryLabel = selectedItem.category || "Uncategorized";
+
+    if (isUnique) {
+      if (inStockUnits.length === 0)
+        return toast({ title: "No serial in stock", description: "Add an available unit on the Inventory page first.", variant: "destructive" });
+      if (!unitId) return toast({ title: "Select a serial/unit to issue", variant: "destructive" });
+      const u = inStockUnits.find((x) => String(x.id) === unitId);
+      setLines((prev) => [...prev, {
+        id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel,
+        quantity: 1, itemUnitId: Number(unitId), unitSerial: u ? unitLabel(u) : undefined,
+      }]);
+    } else if (isSized) {
+      if (availableVariants.length === 0)
+        return toast({ title: "No size in stock", description: "Add stock for a size on the Inventory page first.", variant: "destructive" });
+      if (!variantId) return toast({ title: "Select a size to issue", variant: "destructive" });
+      const n = Number(qty) || 1;
+      if (n > selectedVariantAvail)
+        return toast({ title: `Only ${selectedVariantAvail} of that size left`, description: "Adjust the quantity or add stock.", variant: "destructive" });
+      setLines((prev) => {
+        const idx = prev.findIndex((l) => l.itemId === selectedItem.id && l.itemVariantId === Number(variantId) && !l.itemUnitId);
+        if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + n }; return c; }
+        return [...prev, {
+          id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel,
+          quantity: n, itemVariantId: Number(variantId), variantSize: selectedVariant?.size,
+        }];
+      });
+    } else {
+      const n = Number(qty) || 1;
+      if (n > selectedItemAvail)
+        return toast({ title: `Only ${selectedItemAvail} available`, description: "Adjust the quantity or add stock.", variant: "destructive" });
+      setLines((prev) => {
+        const idx = prev.findIndex((l) => l.itemId === selectedItem.id && !l.itemVariantId && !l.itemUnitId);
+        if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + n }; return c; }
+        return [...prev, { id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel, quantity: n }];
+      });
+    }
+    setLineErrors({});
+    resetItemPickers();
+  }
+
+  function removeFromCart(id: string) {
+    setLines((prev) => prev.filter((l) => l.id !== id));
+    setLineErrors((prev) => { const c = { ...prev }; delete c[id]; return c; });
+  }
+
+  // Map a 409 batch response ({ errors: [{ index, message }] }) back onto cart
+  // rows by their 0-based position in the submitted lines array.
+  function parseBatchError(err: any): Record<string, string> | null {
+    const stripped = String(err?.message ?? "").replace(/^\d+:\s*/, "").trim();
+    try {
+      const parsed = JSON.parse(stripped);
+      if (Array.isArray(parsed?.errors)) {
+        const map: Record<string, string> = {};
+        for (const e of parsed.errors) { const l = lines[e.index]; if (l) map[l.id] = e.message; }
+        return map;
+      }
+    } catch { /* not a structured batch error */ }
+    return null;
+  }
+
+  async function issueCart() {
+    if (!officerId) return toast({ title: "Select an officer", variant: "destructive" });
+    if (lines.length === 0) return;
     setIssuing(true);
     try {
-      await apiRequest("POST", "/api/issue", {
-        officerId: Number(officerId), itemId: Number(itemId), quantity: Number(qty) || 1,
-        itemUnitId: isUnique && unitId ? Number(unitId) : null,
-        itemVariantId: isSized && variantId ? Number(variantId) : null,
-        dueDate: dueDate || null, signature, notes, issuedBy: user?.name,
+      await apiRequest("POST", "/api/issue/batch", {
+        officerId: Number(officerId), signature, dueDate: dueDate || null,
+        notes: notes || undefined, issuedBy: user?.name,
+        lines: lines.map((l) => ({
+          itemId: l.itemId, quantity: l.quantity,
+          itemUnitId: l.itemUnitId ?? null, itemVariantId: l.itemVariantId ?? null,
+        })),
       });
       invalidateAll();
-      queryClient.invalidateQueries({ queryKey: ["/api/items", Number(itemId), "units"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/items", Number(itemId), "variants"] });
-      toast({ title: "Item issued", description: `${qty}× ${selectedItem?.name}${selectedVariant ? ` (${selectedVariant.size})` : ""}` });
-      setIssueCategory(""); setIssueSubcategory(""); setItemId(""); setUnitId(""); setVariantId(""); setQty(1); setDueDate(""); setSignature(""); setNotes("");
+      Array.from(new Set(lines.map((l) => l.itemId))).forEach((id) => {
+        queryClient.invalidateQueries({ queryKey: ["/api/items", id, "units"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/items", id, "variants"] });
+      });
+      const n = lines.length;
+      const who = selectedOfficer ? `${selectedOfficer.firstName} ${selectedOfficer.lastName}` : "officer";
+      toast({ title: `Issued ${n} item${n === 1 ? "" : "s"} to ${who}` });
+      setLines([]); setLineErrors({}); setSignature(""); setNotes(""); setDueDate("");
+      resetItemPickers();
     } catch (e: any) {
-      toast({ title: "Issue failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+      const mapped = parseBatchError(e);
+      if (mapped) { setLineErrors(mapped); toast({ title: "Nothing was issued — fix the highlighted lines", variant: "destructive" }); }
+      else toast({ title: "Issue failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
     } finally { setIssuing(false); }
+  }
+
+  // Switching officers empties the cart (a cart belongs to one officer), so
+  // confirm first when there is anything to lose.
+  function requestOfficerChange(next: string) {
+    if (next === officerId) return;
+    if (lines.length > 0) { setPendingOfficer(next); return; }
+    setOfficerId(next);
   }
 
   async function doReturn() {
@@ -194,7 +310,7 @@ export default function IssueReturn() {
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <Label>Officer</Label>
-                <Select value={officerId} onValueChange={setOfficerId}>
+                <Select value={officerId} onValueChange={requestOfficerChange}>
                   <SelectTrigger data-testid="select-officer"><SelectValue placeholder="Select officer…" /></SelectTrigger>
                   <SelectContent>
                     {officers?.filter((o) => o.status === "active").map((o) => (
@@ -264,7 +380,7 @@ export default function IssueReturn() {
               {isSized && (
                 <div className="space-y-1.5">
                   <Label>Size</Label>
-                  {inStockVariants.length === 0 ? (
+                  {availableVariants.length === 0 ? (
                     <p className="rounded-md bg-destructive/10 p-2.5 text-xs text-destructive" data-testid="text-no-sizes">
                       No sizes in stock. Add stock for a size on the Inventory page before issuing.
                     </p>
@@ -272,7 +388,7 @@ export default function IssueReturn() {
                     <Select value={variantId} onValueChange={(v) => { setVariantId(v); setQty(1); }}>
                       <SelectTrigger data-testid="select-issue-size"><SelectValue placeholder="Select size to issue…" /></SelectTrigger>
                       <SelectContent>
-                        {inStockVariants.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.size} — {v.quantity} avail</SelectItem>)}
+                        {availableVariants.map(({ v, avail }) => <SelectItem key={v.id} value={String(v.id)}>{v.size} — {avail} avail</SelectItem>)}
                       </SelectContent>
                     </Select>
                   )}
@@ -285,30 +401,69 @@ export default function IssueReturn() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>Quantity</Label>
-                  <Input type="number" min={1} max={selectedItem?.type === "unique" ? 1 : isSized ? (selectedVariant?.quantity ?? 1) : selectedItem?.quantity ?? 999}
-                    value={qty} onChange={(e) => setQty(Number(e.target.value))} disabled={selectedItem?.type === "unique"} data-testid="input-issue-qty" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Due date (optional)</Label>
-                  <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="input-due-date" />
-                </div>
+              <div className="space-y-1.5">
+                <Label>Quantity</Label>
+                <Input type="number" min={1} max={selectedItem?.type === "unique" ? 1 : isSized ? Math.max(selectedVariantAvail, 1) : Math.max(selectedItemAvail, 1)}
+                  value={qty} onChange={(e) => setQty(Number(e.target.value))} disabled={selectedItem?.type === "unique"} data-testid="input-issue-qty" />
               </div>
 
+              <Button className="w-full" variant="outline" onClick={addToCart} disabled={!itemId} data-testid="button-add-to-cart">
+                <Plus className="mr-1.5 h-4 w-4" /> Add to Cart
+              </Button>
+            </div>
+          </Card>
+
+          {/* Cart */}
+          <Card className="mt-4 max-w-xl p-5" data-testid="section-cart">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                <ShoppingCart className="h-4 w-4" /> Cart
+              </h3>
+              <span className="text-xs text-muted-foreground">{lines.length} line{lines.length === 1 ? "" : "s"}</span>
+            </div>
+
+            {lines.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border p-4 text-center text-sm text-muted-foreground">Cart is empty</p>
+            ) : (
+              <ul className="divide-y divide-border rounded-md border border-border">
+                {lines.map((l) => {
+                  const err = lineErrors[l.id];
+                  return (
+                    <li key={l.id} className={`px-3 py-2.5 ${err ? "border-l-2 border-l-destructive bg-destructive/5" : ""}`} data-testid={`row-cart-${l.id}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">
+                            {l.quantity}× {l.itemName}
+                            {l.unitSerial ? ` · ${l.unitSerial}` : l.variantSize ? ` · ${l.variantSize}` : ""}
+                          </p>
+                          <p className="text-xs text-muted-foreground">{l.categoryLabel}</p>
+                        </div>
+                        <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => removeFromCart(l.id)} data-testid={`button-remove-cart-${l.id}`}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="mt-4 space-y-4">
+              <div className="space-y-1.5">
+                <Label>Due date (optional)</Label>
+                <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="input-due-date" />
+              </div>
               <div className="space-y-1.5">
                 <Label>Recipient signature / acknowledgement</Label>
                 <Input placeholder="Type full name to acknowledge receipt" value={signature} onChange={(e) => setSignature(e.target.value)} data-testid="input-signature" />
               </div>
-
               <div className="space-y-1.5">
                 <Label>Notes (optional)</Label>
                 <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </div>
-
-              <Button className="w-full" onClick={doIssue} disabled={issuing} data-testid="button-issue">
-                <PackageCheck className="mr-1.5 h-4 w-4" /> {issuing ? "Issuing…" : "Issue Item"}
+              <Button className="w-full" onClick={issueCart} disabled={issuing || lines.length === 0} data-testid="button-issue-cart">
+                <PackageCheck className="mr-1.5 h-4 w-4" /> {issuing ? "Issuing…" : `Issue Cart (${lines.length} item${lines.length === 1 ? "" : "s"})`}
               </Button>
             </div>
           </Card>
@@ -350,6 +505,27 @@ export default function IssueReturn() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Officer switch confirm — a cart belongs to one officer */}
+      <AlertDialog open={pendingOfficer !== null} onOpenChange={(o) => !o && setPendingOfficer(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch officers?</AlertDialogTitle>
+            <AlertDialogDescription>Switching officers clears the cart. The {lines.length} item{lines.length === 1 ? "" : "s"} you added will be removed.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingOfficer(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="button-confirm-officer-switch"
+              onClick={() => {
+                if (pendingOfficer !== null) setOfficerId(pendingOfficer);
+                setLines([]); setLineErrors({}); resetItemPickers();
+                setPendingOfficer(null);
+              }}
+            >Switch &amp; clear cart</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Return dialog */}
       <Dialog open={!!returnFor} onOpenChange={(o) => !o && setReturnFor(null)}>
