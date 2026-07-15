@@ -1,5 +1,5 @@
-import { storage, db } from "./storage";
-import { users, officers, items, kits, kitItems, assignments, auditLog } from "@shared/schema";
+import { storage } from "./storage";
+import { supabase, unwrap } from "./supabase";
 import bcrypt from "bcryptjs";
 
 const nowISO = () => new Date().toISOString();
@@ -29,14 +29,19 @@ const AUDITOR_PW = seedPw("QM_AUDITOR_PW", "auditor");
 const daysFromNow = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString(); };
 
 async function seed() {
-  // Wipe (idempotent reseed)
-  db.delete(assignments).run();
-  db.delete(kitItems).run();
-  db.delete(kits).run();
-  db.delete(items).run();
-  db.delete(officers).run();
-  db.delete(users).run();
-  db.delete(auditLog).run();
+  // Wipe (idempotent reseed). Deleted in FK-safe order; item_units/item_variants
+  // are removed too so a reseed starts from a clean slate. `id >= 0` matches
+  // every row (identity ids start at 1) — PostgREST requires a filter on delete.
+  const wipe = async (table: string) => { unwrap(await supabase.from(table).delete().gte("id", 0)); };
+  await wipe("assignments");
+  await wipe("kit_items");
+  await wipe("kits");
+  await wipe("item_units");
+  await wipe("item_variants");
+  await wipe("items");
+  await wipe("officers");
+  await wipe("users");
+  await wipe("audit_log");
 
   /* ---- Users ---- */
   await storage.createUser({ username: "admin", password: hash(ADMIN_PW), name: "System Administrator", role: "admin", mustChangePassword: false, active: true, officerId: null as any });

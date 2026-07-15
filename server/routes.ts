@@ -7,7 +7,7 @@ import {
   insertKitSchema, computeStock,
 } from "@shared/schema";
 import type { InsertItemVariant, InsertAssignment, Officer } from "@shared/schema";
-import type { IssueBatchPlan } from "./storage";
+import type { IssueBatchPlan, KitIssuePlan, ReturnPlan } from "./storage";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
@@ -648,38 +648,46 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const { conditionIn, returnedBy, notes } = req.body ?? {};
       const condition = conditionIn ?? "Good";
 
-      await storage.updateAssignment(a.id, {
-        status: "returned", conditionIn: condition, returnedAt: nowISO(),
-        returnedBy: returnedBy ?? null, notes: notes ?? a.notes,
-      });
+      // Pre-resolve the return branch (sized / serialized / bulk) here, then
+      // apply the assignment update + stock restock atomically via one RPC so a
+      // partial write can never escape. Branch logic mirrors the prior
+      // sequential implementation exactly.
+      const plan: ReturnPlan = {
+        assignmentId: a.id,
+        assignmentPatch: {
+          status: "returned", conditionIn: condition, returnedAt: nowISO(),
+          returnedBy: returnedBy ?? null, notes: notes ?? a.notes,
+        },
+        variantDelta: null, unitPatch: null, itemPatch: null, syncItemIds: [],
+      };
       if (item && item.type === "sized" && a.itemVariantId) {
         // Sized return: restock the specific size only when the item is
         // configured returnable. Consumable sized items are marked returned but
         // never restocked (mirrors non-sized consumable behavior).
         if ((item.returnBehavior ?? "returnable") === "returnable") {
           const variant = await storage.getVariant(a.itemVariantId);
-          if (variant) await storage.updateVariant(variant.id, { quantity: variant.quantity + a.quantity });
+          if (variant) plan.variantDelta = { id: variant.id, newQty: variant.quantity + a.quantity };
         }
       } else if (item && item.type === "unique" && a.itemUnitId) {
         // Serialized return: flip the specific unit back, then let the item
-        // quantity/status re-derive from its units.
-        await storage.updateUnit(a.itemUnitId, {
+        // quantity/status re-derive from its units (syncItemIds).
+        plan.unitPatch = {
+          id: a.itemUnitId,
           status: item.requiresInspection ? "maintenance" : "in_stock",
           assignedOfficerId: null,
           condition,
-        });
+        };
+        plan.syncItemIds = [item.id];
       } else if (item) {
         // Damaged returnable items go to maintenance if inspection required
         const backToStock = item.requiresInspection ? "maintenance" : "in_stock";
-        await storage.updateItem(item.id, {
-          quantity: item.quantity + a.quantity,
-          status: item.type === "unique"
-            ? (item.requiresInspection ? "maintenance" : "in_stock")
-            : item.status,
-          condition: condition,
-          ...(item.requiresInspection ? { status: backToStock } : {}),
-        });
+        let status = item.type === "unique"
+          ? (item.requiresInspection ? "maintenance" : "in_stock")
+          : item.status;
+        if (item.requiresInspection) status = backToStock;
+        plan.itemPatch = { id: item.id, quantity: item.quantity + a.quantity, status, condition };
       }
+      await storage.returnAssignment(plan);
       await audit("return", "assignment", a.id,
         `Returned "${item?.name}" from ${officer?.firstName} ${officer?.lastName} — condition: ${condition}`, returnedBy);
       res.json({ ok: true });
@@ -766,7 +774,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         unitByItem[item.id] = chosen;
       }
 
-      const results: any[] = []; const skipped: string[] = [];
+      // Build a write-free plan (aggregated deltas + one assignment per issuable
+      // line), deciding skips here, then apply it atomically via one RPC. Running
+      // balances mirror the old sequential per-line stock decrements (a kit that
+      // lists the same variant/item twice sees the reduced stock on later lines).
+      const skipped: string[] = [];
+      const plan: KitIssuePlan = { variantDeltas: [], itemDeltas: [], unitIssues: [], assignments: [], syncItemIds: [] };
+      const variantRemaining = new Map<number, number>();
+      const itemRemaining = new Map<number, number>();
+      const syncItemIds = new Set<number>();
       for (const line of lines) {
         const item = await storage.getItem(line.itemId);
         if (!item) continue;
@@ -774,7 +790,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         let itemVariantId: number | null = null;
         if (item.type === "unique") {
           const unit = unitByItem[item.id];
-          await storage.updateUnit(unit.id, { status: "issued", assignedOfficerId: officer.id });
+          plan.unitIssues.push({ id: unit.id, officerId: officer.id });
+          syncItemIds.add(item.id);
           itemUnitId = unit.id;
         } else if (item.type === "sized") {
           // Sized kit lines need a per-item size pick; a missing/invalid or
@@ -782,22 +799,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           const chosenId = variantSelections[String(item.id)];
           const variant = chosenId ? await storage.getVariant(Number(chosenId)) : undefined;
           if (!variant || variant.itemId !== item.id) { skipped.push(`${item.name} (no size selected)`); continue; }
-          if (variant.quantity < line.quantity) { skipped.push(`${item.name} size ${variant.size} (insufficient stock)`); continue; }
-          await storage.updateVariant(variant.id, { quantity: variant.quantity - line.quantity });
+          if (!variantRemaining.has(variant.id)) variantRemaining.set(variant.id, variant.quantity);
+          const remaining = variantRemaining.get(variant.id)!;
+          if (remaining < line.quantity) { skipped.push(`${item.name} size ${variant.size} (insufficient stock)`); continue; }
+          variantRemaining.set(variant.id, remaining - line.quantity);
           itemVariantId = variant.id;
         } else {
-          if (item.quantity < line.quantity) { skipped.push(`${item.name} (insufficient stock)`); continue; }
-          await storage.updateItem(item.id, { quantity: item.quantity - line.quantity });
+          if (!itemRemaining.has(item.id)) itemRemaining.set(item.id, item.quantity);
+          const remaining = itemRemaining.get(item.id)!;
+          if (remaining < line.quantity) { skipped.push(`${item.name} (insufficient stock)`); continue; }
+          itemRemaining.set(item.id, remaining - line.quantity);
         }
-        const a = await storage.createAssignment({
+        plan.assignments.push({
           itemId: item.id, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any, officerId: officer.id, quantity: line.quantity, status: "active",
           conditionOut: item.condition ?? "New", conditionIn: null as any,
           issuedAt: nowISO(), dueDate: dueDate ?? null as any, returnedAt: null as any,
           issuedBy: issuedBy ?? null as any, returnedBy: null as any,
           signature: signature ?? null as any, notes: notes ?? "Kit issue",
         });
-        results.push(a);
       }
+      plan.variantDeltas = Array.from(variantRemaining.entries()).map(([id, newQty]) => ({ id, newQty }));
+      plan.itemDeltas = Array.from(itemRemaining.entries()).map(([id, newQty]) => ({ id, newQty, setIssued: false }));
+      plan.syncItemIds = Array.from(syncItemIds);
+      const results = await storage.issueKit(plan);
       await audit("issue_kit", "officer", officer.id,
         `Issued kit to ${officer.firstName} ${officer.lastName} — ${results.length} items${skipped.length ? `, ${skipped.length} skipped` : ""}`, issuedBy);
       res.json({ issued: results.length, skipped });

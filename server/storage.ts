@@ -1,204 +1,38 @@
-import {
-  users, officers, items, assignments, kits, kitItems, auditLog, itemUnits, itemVariants,
-} from "@shared/schema";
 import type {
   User, InsertUser, Officer, InsertOfficer, Item, InsertItem,
   Assignment, InsertAssignment, Kit, InsertKit, KitItem, InsertKitItem,
   AuditEntry, InsertAudit, ItemUnit, InsertItemUnit, ItemVariant, InsertItemVariant,
   VariantCounts,
 } from "@shared/schema";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-// SQLCipher-capable, API-compatible drop-in replacement for better-sqlite3.
-import Database from "better-sqlite3-multiple-ciphers";
-import { eq, desc, and } from "drizzle-orm";
+import { supabase, unwrap } from "./supabase";
 
-/* ----------------------- Encryption at rest -----------------------
- * The SQLite database file is encrypted on disk with SQLCipher (AES-256).
- * The key is supplied at runtime via the DB_ENCRYPTION_KEY environment
- * variable, so it is never written into source control or into the database
- * file itself. In a UFIT / RC PubApps deployment this value is provided by
- * the host's protected environment or secret store. The development default
- * below is clearly marked and MUST be overridden before any real data is
- * stored.
+/* ------------------------------------------------------------------ *
+ * Storage layer — Supabase (Postgres) via @supabase/supabase-js.
+ *
+ * Single-table CRUD uses PostgREST directly. Every multi-write /
+ * transactional operation (issue, batch issue, kit issue, return, kit-item
+ * replace, serialized-unit quantity sync) is delegated to a plpgsql function
+ * (see supabase/migration.sql) via supabase.rpc() so it runs atomically.
+ *
+ * Postgres columns are quoted camelCase, matching the TS field names, so rows
+ * round-trip with no key mapping and JSON responses stay byte-identical to the
+ * previous SQLite/Drizzle implementation.
  * ------------------------------------------------------------------ */
-const DEV_DEFAULT_KEY = "dev-insecure-key-change-me";
-const ENV_KEY = process.env.DB_ENCRYPTION_KEY;
-if (!ENV_KEY && process.env.NODE_ENV === "production") {
-  // Fail fast in production: refuse to start with the insecure dev key, which
-  // would silently store real departmental data under a publicly known key.
-  throw new Error(
-    "[security] DB_ENCRYPTION_KEY must be set in production. Refusing to start " +
-    "with the insecure development key. Provide DB_ENCRYPTION_KEY via the host's " +
-    "protected environment or secret store.",
-  );
-}
-const DB_KEY = ENV_KEY || DEV_DEFAULT_KEY;
-if (DB_KEY === DEV_DEFAULT_KEY) {
-  console.warn(
-    "[security] DB_ENCRYPTION_KEY is not set \u2014 using the insecure development " +
-    "key. Set DB_ENCRYPTION_KEY before storing real departmental data.",
-  );
-}
-
-const sqlite = new Database("data.db");
-// Select the SQLCipher cipher and apply the key BEFORE any other statement.
-sqlite.pragma("cipher='sqlcipher'");
-sqlite.pragma(`key='${DB_KEY.replace(/'/g, "''")}'`);
-// Flush any pre-existing WAL data (from a DB inherited in WAL mode) into the
-// main data.db file before switching journal modes.
-sqlite.pragma("wal_checkpoint(TRUNCATE)");
-// Use DELETE mode so every committed transaction lands directly in data.db.
-// The deploy platform only snapshots data.db (not the -wal/-shm sidecars), so
-// WAL mode could lose recently committed data on redeploy.
-sqlite.pragma("journal_mode = DELETE");
-
-// Self-initialize the schema (idempotent) so a fresh encrypted database can be
-// created without drizzle-kit push, which cannot open an encrypted file.
-sqlite.exec(`
-CREATE TABLE IF NOT EXISTS "users" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "username" text NOT NULL,
-  "password" text NOT NULL,
-  "name" text NOT NULL,
-  "role" text DEFAULT 'officer' NOT NULL,
-  "officer_id" integer,
-  "must_change_password" integer DEFAULT false NOT NULL,
-  "active" integer DEFAULT true NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS "users_username_unique" ON "users" ("username");
-CREATE TABLE IF NOT EXISTS "officers" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "badge_number" text NOT NULL,
-  "first_name" text NOT NULL,
-  "last_name" text NOT NULL,
-  "rank" text,
-  "unit" text,
-  "email" text,
-  "phone" text,
-  "status" text DEFAULT 'active' NOT NULL,
-  "hire_date" text,
-  "shirt_size" text,
-  "pants_size" text,
-  "jacket_size" text,
-  "shoe_size" text,
-  "vest_size" text,
-  "hat_size" text,
-  "glove_size" text,
-  "notes" text
-);
-CREATE TABLE IF NOT EXISTS "items" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "name" text NOT NULL,
-  "category" text DEFAULT 'General' NOT NULL,
-  "type" text DEFAULT 'consumable' NOT NULL,
-  "sku" text,
-  "serial_number" text,
-  "size" text,
-  "color" text,
-  "quantity" integer DEFAULT 0 NOT NULL,
-  "par_level" integer DEFAULT 0 NOT NULL,
-  "location" text,
-  "unit_cost" real DEFAULT 0,
-  "vendor" text,
-  "grant_number" text,
-  "expiration_date" text,
-  "condition" text DEFAULT 'New',
-  "status" text DEFAULT 'in_stock' NOT NULL,
-  "requires_inspection" integer DEFAULT false NOT NULL,
-  "last_inspected" text,
-  "image_url" text,
-  "notes" text,
-  "created_at" text NOT NULL,
-  "subcategory" text,
-  "attributes" text
-);
-CREATE TABLE IF NOT EXISTS "kits" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "name" text NOT NULL,
-  "description" text
-);
-CREATE TABLE IF NOT EXISTS "kit_items" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "kit_id" integer NOT NULL,
-  "item_id" integer NOT NULL,
-  "quantity" integer DEFAULT 1 NOT NULL
-);
-CREATE TABLE IF NOT EXISTS "assignments" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "item_id" integer NOT NULL,
-  "officer_id" integer NOT NULL,
-  "quantity" integer DEFAULT 1 NOT NULL,
-  "status" text DEFAULT 'active' NOT NULL,
-  "condition_out" text DEFAULT 'New',
-  "condition_in" text,
-  "issued_at" text NOT NULL,
-  "due_date" text,
-  "returned_at" text,
-  "issued_by" text,
-  "returned_by" text,
-  "signature" text,
-  "notes" text
-);
-CREATE TABLE IF NOT EXISTS "audit_log" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "action" text NOT NULL,
-  "entity" text,
-  "entity_id" integer,
-  "detail" text,
-  "username" text,
-  "timestamp" text NOT NULL
-);
-CREATE TABLE IF NOT EXISTS "item_units" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "item_id" integer NOT NULL,
-  "serial_number" text NOT NULL,
-  "secondary_serial_number" text,
-  "status" text DEFAULT 'in_stock' NOT NULL,
-  "condition" text DEFAULT 'New',
-  "assigned_officer_id" integer,
-  "location" text,
-  "acquired_date" text,
-  "notes" text,
-  "created_at" text NOT NULL
-);
-CREATE TABLE IF NOT EXISTS "item_variants" (
-  "id" integer PRIMARY KEY AUTOINCREMENT NOT NULL,
-  "item_id" integer NOT NULL,
-  "size" text NOT NULL,
-  "sku" text,
-  "quantity" integer DEFAULT 0 NOT NULL,
-  "par_level" integer DEFAULT 0 NOT NULL,
-  "notes" text,
-  "created_at" text NOT NULL
-);
-`);
-
-/* ----------------------- Additive migrations ----------------------
- * drizzle-kit push cannot open the encrypted database, so schema changes that
- * ALTER existing tables are applied here at startup. Each helper is idempotent:
- * it checks the live column set first and only adds what is missing. Migrations
- * must be ADDITIVE ONLY so an existing (snapshotted-forward) data.db keeps all
- * of its rows.
- * ------------------------------------------------------------------ */
-function addColumnIfMissing(table: string, column: string, definition: string) {
-  const cols = sqlite.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[];
-  if (!cols.some((c) => c.name === column)) {
-    sqlite.exec(`ALTER TABLE "${table}" ADD COLUMN ${definition}`);
-  }
-}
-
-// assignments.item_unit_id links an assignment to a specific serialized unit.
-addColumnIfMissing("assignments", "item_unit_id", '"item_unit_id" integer');
-// assignments.item_variant_id links an assignment to a specific size variant.
-addColumnIfMissing("assignments", "item_variant_id", '"item_variant_id" integer');
-// items.return_behavior controls restock-on-return for sized items.
-addColumnIfMissing("items", "return_behavior", `"return_behavior" text DEFAULT 'returnable'`);
-// Safety net in case an older item_units table predates the secondary serial.
-addColumnIfMissing("item_units", "secondary_serial_number", '"secondary_serial_number" text');
-
-export const db = drizzle(sqlite);
 
 const now = () => new Date().toISOString();
+
+// PostgREST table names (snake_case) — column names remain camelCase.
+const T = {
+  users: "users",
+  officers: "officers",
+  items: "items",
+  itemUnits: "item_units",
+  itemVariants: "item_variants",
+  assignments: "assignments",
+  kits: "kits",
+  kitItems: "kit_items",
+  auditLog: "audit_log",
+} as const;
 
 export type UnitStatusCounts = {
   total: number;
@@ -210,12 +44,35 @@ export type UnitStatusCounts = {
 
 // Pre-resolved, aggregated writes for an all-or-nothing multi-line issue.
 // Stock deltas are pre-computed final values (one per distinct target), so the
-// transaction just applies them; one assignment row is inserted per issue line.
+// RPC just applies them; one assignment row is inserted per issue line.
 export interface IssueBatchPlan {
   variantDeltas: { id: number; newQty: number }[];
   itemDeltas: { id: number; newQty: number; setIssued: boolean }[];
   unitIssues: { id: number; officerId: number }[];
   assignments: InsertAssignment[];
+}
+
+// Kit issue reuses the aggregated-delta shape and additionally re-derives the
+// affected serialized items' quantity/status (syncItemIds) — matching the old
+// per-unit storage.updateUnit -> syncItemQuantity behavior.
+export interface KitIssuePlan extends IssueBatchPlan {
+  syncItemIds: number[];
+}
+
+// Pre-resolved patches for an atomic return + restock.
+export interface ReturnPlan {
+  assignmentId: number;
+  assignmentPatch: {
+    status: string;
+    conditionIn: string;
+    returnedAt: string;
+    returnedBy: string | null;
+    notes: string | null;
+  };
+  variantDelta: { id: number; newQty: number } | null;
+  unitPatch: { id: number; status: string; assignedOfficerId: number | null; condition: string } | null;
+  itemPatch: { id: number; quantity: number; status: string; condition: string } | null;
+  syncItemIds: number[];
 }
 
 export interface IStorage {
@@ -260,6 +117,8 @@ export interface IStorage {
   listAssignmentsByOfficer(officerId: number): Promise<Assignment[]>;
   createAssignment(a: InsertAssignment): Promise<Assignment>;
   issueBatch(plan: IssueBatchPlan): Promise<Assignment[]>;
+  issueKit(plan: KitIssuePlan): Promise<Assignment[]>;
+  returnAssignment(plan: ReturnPlan): Promise<Assignment | undefined>;
   updateAssignment(id: number, a: Partial<InsertAssignment>): Promise<Assignment | undefined>;
   deleteAssignmentsByOfficer(officerId: number): Promise<void>;
   // kits
@@ -280,88 +139,90 @@ export interface IStorage {
 export class DatabaseStorage implements IStorage {
   // ---- users ----
   async getUser(id: number) {
-    return db.select().from(users).where(eq(users.id, id)).get();
+    return unwrap(await supabase.from(T.users).select("*").eq("id", id).maybeSingle()) as User ?? undefined;
   }
   async getUserByUsername(username: string) {
-    return db.select().from(users).where(eq(users.username, username)).get();
+    return unwrap(await supabase.from(T.users).select("*").eq("username", username).maybeSingle()) as User ?? undefined;
   }
   async listUsers() {
-    return db.select().from(users).all();
+    return unwrap(await supabase.from(T.users).select("*")) as User[];
   }
   async createUser(u: InsertUser) {
-    return db.insert(users).values(u).returning().get();
+    return unwrap(await supabase.from(T.users).insert(u).select().single()) as User;
   }
   async updateUser(id: number, u: Partial<InsertUser>) {
-    return db.update(users).set(u).where(eq(users.id, id)).returning().get();
+    return unwrap(await supabase.from(T.users).update(u).eq("id", id).select().maybeSingle()) as User ?? undefined;
   }
   async deleteUser(id: number) {
-    db.delete(users).where(eq(users.id, id)).run();
+    unwrap(await supabase.from(T.users).delete().eq("id", id));
   }
 
   // ---- officers ----
   async listOfficers() {
-    return db.select().from(officers).orderBy(officers.lastName).all();
+    return unwrap(await supabase.from(T.officers).select("*").order("lastName")) as Officer[];
   }
   async getOfficer(id: number) {
-    return db.select().from(officers).where(eq(officers.id, id)).get();
+    return unwrap(await supabase.from(T.officers).select("*").eq("id", id).maybeSingle()) as Officer ?? undefined;
   }
   async createOfficer(o: InsertOfficer) {
-    return db.insert(officers).values(o).returning().get();
+    return unwrap(await supabase.from(T.officers).insert(o).select().single()) as Officer;
   }
   async updateOfficer(id: number, o: Partial<InsertOfficer>) {
-    return db.update(officers).set(o).where(eq(officers.id, id)).returning().get();
+    return unwrap(await supabase.from(T.officers).update(o).eq("id", id).select().maybeSingle()) as Officer ?? undefined;
   }
   async deleteOfficer(id: number) {
-    db.delete(officers).where(eq(officers.id, id)).run();
+    unwrap(await supabase.from(T.officers).delete().eq("id", id));
   }
 
   // ---- items ----
   async listItems() {
-    return db.select().from(items).orderBy(items.name).all();
+    return unwrap(await supabase.from(T.items).select("*").order("name")) as Item[];
   }
   async getItem(id: number) {
-    return db.select().from(items).where(eq(items.id, id)).get();
+    return unwrap(await supabase.from(T.items).select("*").eq("id", id).maybeSingle()) as Item ?? undefined;
   }
   async createItem(i: InsertItem) {
-    return db.insert(items).values({ ...i, createdAt: now() }).returning().get();
+    return unwrap(await supabase.from(T.items).insert({ ...i, createdAt: now() }).select().single()) as Item;
   }
   async updateItem(id: number, i: Partial<InsertItem>) {
-    return db.update(items).set(i).where(eq(items.id, id)).returning().get();
+    return unwrap(await supabase.from(T.items).update(i).eq("id", id).select().maybeSingle()) as Item ?? undefined;
   }
   async deleteItem(id: number) {
-    db.delete(items).where(eq(items.id, id)).run();
+    // FK ON DELETE CASCADE removes this item's units, variants, assignments,
+    // and kit-item lines in the same statement (see migration.sql).
+    unwrap(await supabase.from(T.items).delete().eq("id", id));
   }
 
   // ---- item units (serialized) ----
   async listUnitsByItem(itemId: number) {
-    return db.select().from(itemUnits).where(eq(itemUnits.itemId, itemId)).orderBy(itemUnits.id).all();
+    return unwrap(await supabase.from(T.itemUnits).select("*").eq("itemId", itemId).order("id")) as ItemUnit[];
   }
   async getUnit(id: number) {
-    return db.select().from(itemUnits).where(eq(itemUnits.id, id)).get();
+    return unwrap(await supabase.from(T.itemUnits).select("*").eq("id", id).maybeSingle()) as ItemUnit ?? undefined;
   }
   async createUnit(u: Omit<InsertItemUnit, "status" | "assignedOfficerId">) {
-    const unit = db.insert(itemUnits).values({
+    const unit = unwrap(await supabase.from(T.itemUnits).insert({
       ...u,
       status: "in_stock",
       assignedOfficerId: null,
       createdAt: now(),
-    }).returning().get();
+    }).select().single()) as ItemUnit;
     await this.syncItemQuantity(unit.itemId);
     return unit;
   }
   async updateUnit(id: number, patch: Partial<InsertItemUnit>) {
-    const updated = db.update(itemUnits).set(patch).where(eq(itemUnits.id, id)).returning().get();
+    const updated = unwrap(await supabase.from(T.itemUnits).update(patch).eq("id", id).select().maybeSingle()) as ItemUnit ?? undefined;
     if (updated) await this.syncItemQuantity(updated.itemId);
     return updated;
   }
   async deleteUnit(id: number) {
     const unit = await this.getUnit(id);
-    db.delete(itemUnits).where(eq(itemUnits.id, id)).run();
+    unwrap(await supabase.from(T.itemUnits).delete().eq("id", id));
     if (unit) await this.syncItemQuantity(unit.itemId);
   }
   async unitStatusCountsByItem() {
     const out: Record<number, UnitStatusCounts> = {};
-    const all = db.select().from(itemUnits).all();
+    const all = unwrap(await supabase.from(T.itemUnits).select("itemId,status")) as { itemId: number; status: string }[];
     for (const u of all) {
       const c = out[u.itemId] ?? (out[u.itemId] = { total: 0, in_stock: 0, issued: 0, maintenance: 0, retired: 0 });
       c.total++;
@@ -371,41 +232,31 @@ export class DatabaseStorage implements IStorage {
     }
     return out;
   }
-  // Keep the parent item's quantity/status in sync with its serialized units:
-  // quantity = number of units; status = 'issued' only when NO unit is in_stock
-  // (otherwise 'in_stock'), so the catalog still reflects availability at a glance.
+  // Re-derive a `unique` item's quantity/status from its units (atomic in the
+  // DB). See sync_item_quantity() in migration.sql.
   async syncItemQuantity(itemId: number) {
-    const item = await this.getItem(itemId);
-    if (!item || item.type !== "unique") return;
-    const units = await this.listUnitsByItem(itemId);
-    const inStock = units.filter((u) => u.status === "in_stock").length;
-    const patch: Partial<InsertItem> = { quantity: units.length };
-    // Don't clobber a manual maintenance/retired hold on the item itself.
-    if (item.status === "in_stock" || item.status === "issued") {
-      patch.status = inStock > 0 ? "in_stock" : "issued";
-    }
-    db.update(items).set(patch).where(eq(items.id, itemId)).run();
+    unwrap(await supabase.rpc("sync_item_quantity", { p_item_id: itemId }));
   }
 
   // ---- item variants (sized) ----
   async listVariants(itemId: number) {
-    return db.select().from(itemVariants).where(eq(itemVariants.itemId, itemId)).orderBy(itemVariants.id).all();
+    return unwrap(await supabase.from(T.itemVariants).select("*").eq("itemId", itemId).order("id")) as ItemVariant[];
   }
   async getVariant(id: number) {
-    return db.select().from(itemVariants).where(eq(itemVariants.id, id)).get();
+    return unwrap(await supabase.from(T.itemVariants).select("*").eq("id", id).maybeSingle()) as ItemVariant ?? undefined;
   }
   async createVariant(v: InsertItemVariant) {
-    return db.insert(itemVariants).values({ ...v, createdAt: now() }).returning().get();
+    return unwrap(await supabase.from(T.itemVariants).insert({ ...v, createdAt: now() }).select().single()) as ItemVariant;
   }
   async updateVariant(id: number, patch: Partial<InsertItemVariant>) {
-    return db.update(itemVariants).set(patch).where(eq(itemVariants.id, id)).returning().get();
+    return unwrap(await supabase.from(T.itemVariants).update(patch).eq("id", id).select().maybeSingle()) as ItemVariant ?? undefined;
   }
   async deleteVariant(id: number) {
-    db.delete(itemVariants).where(eq(itemVariants.id, id)).run();
+    unwrap(await supabase.from(T.itemVariants).delete().eq("id", id));
   }
   async variantCountsByItem() {
     const out: Record<number, VariantCounts> = {};
-    const all = db.select().from(itemVariants).orderBy(itemVariants.id).all();
+    const all = unwrap(await supabase.from(T.itemVariants).select("*").order("id")) as ItemVariant[];
     for (const v of all) {
       const c = out[v.itemId] ?? (out[v.itemId] = { total: 0, sizes: [] });
       c.total += v.quantity;
@@ -416,84 +267,74 @@ export class DatabaseStorage implements IStorage {
 
   // ---- assignments ----
   async listAssignments() {
-    return db.select().from(assignments).orderBy(desc(assignments.issuedAt)).all();
+    return unwrap(await supabase.from(T.assignments).select("*").order("issuedAt", { ascending: false })) as Assignment[];
   }
   async listActiveAssignments() {
-    return db.select().from(assignments).where(eq(assignments.status, "active")).all();
+    return unwrap(await supabase.from(T.assignments).select("*").eq("status", "active")) as Assignment[];
   }
   async getAssignment(id: number) {
-    return db.select().from(assignments).where(eq(assignments.id, id)).get();
+    return unwrap(await supabase.from(T.assignments).select("*").eq("id", id).maybeSingle()) as Assignment ?? undefined;
   }
   async listAssignmentsByOfficer(officerId: number) {
-    return db.select().from(assignments).where(eq(assignments.officerId, officerId)).all();
+    return unwrap(await supabase.from(T.assignments).select("*").eq("officerId", officerId)) as Assignment[];
   }
   async createAssignment(a: InsertAssignment) {
-    return db.insert(assignments).values(a).returning().get();
+    return unwrap(await supabase.from(T.assignments).insert(a).select().single()) as Assignment;
   }
-  // Apply a pre-validated batch of issues atomically: all stock decrements and
-  // assignment inserts land together or not at all (see replaceKitItems).
+  // Apply a pre-validated batch of issues atomically (all stock decrements and
+  // assignment inserts land together or not at all).
   async issueBatch(plan: IssueBatchPlan) {
-    return db.transaction((tx) => {
-      for (const v of plan.variantDeltas)
-        tx.update(itemVariants).set({ quantity: v.newQty }).where(eq(itemVariants.id, v.id)).run();
-      for (const it of plan.itemDeltas) {
-        const patch: Partial<InsertItem> = { quantity: it.newQty };
-        if (it.setIssued) patch.status = "issued";
-        tx.update(items).set(patch).where(eq(items.id, it.id)).run();
-      }
-      for (const u of plan.unitIssues)
-        tx.update(itemUnits).set({ status: "issued", assignedOfficerId: u.officerId }).where(eq(itemUnits.id, u.id)).run();
-      const created: Assignment[] = [];
-      for (const a of plan.assignments) created.push(tx.insert(assignments).values(a).returning().get());
-      return created;
-    });
+    return unwrap(await supabase.rpc("issue_batch", { p: plan })) as Assignment[];
+  }
+  async issueKit(plan: KitIssuePlan) {
+    return unwrap(await supabase.rpc("kit_issue", { p: plan })) as Assignment[];
+  }
+  async returnAssignment(plan: ReturnPlan) {
+    return unwrap(await supabase.rpc("return_assignment", { p: plan })) as Assignment ?? undefined;
   }
   async updateAssignment(id: number, a: Partial<InsertAssignment>) {
-    return db.update(assignments).set(a).where(eq(assignments.id, id)).returning().get();
+    return unwrap(await supabase.from(T.assignments).update(a).eq("id", id).select().maybeSingle()) as Assignment ?? undefined;
   }
   async deleteAssignmentsByOfficer(officerId: number) {
-    db.delete(assignments).where(eq(assignments.officerId, officerId)).run();
+    unwrap(await supabase.from(T.assignments).delete().eq("officerId", officerId));
   }
 
   // ---- kits ----
   async listKits() {
-    return db.select().from(kits).all();
+    return unwrap(await supabase.from(T.kits).select("*")) as Kit[];
   }
   async getKit(id: number) {
-    return db.select().from(kits).where(eq(kits.id, id)).get();
+    return unwrap(await supabase.from(T.kits).select("*").eq("id", id).maybeSingle()) as Kit ?? undefined;
   }
   async createKit(k: InsertKit) {
-    return db.insert(kits).values(k).returning().get();
+    return unwrap(await supabase.from(T.kits).insert(k).select().single()) as Kit;
   }
   async updateKit(id: number, k: Partial<InsertKit>) {
-    return db.update(kits).set(k).where(eq(kits.id, id)).returning().get();
+    return unwrap(await supabase.from(T.kits).update(k).eq("id", id).select().maybeSingle()) as Kit ?? undefined;
   }
   async deleteKit(id: number) {
-    db.delete(kitItems).where(eq(kitItems.kitId, id)).run();
-    db.delete(kits).where(eq(kits.id, id)).run();
+    // FK ON DELETE CASCADE removes this kit's kit_items in the same statement.
+    unwrap(await supabase.from(T.kits).delete().eq("id", id));
   }
   async replaceKitItems(kitId: number, lines: { itemId: number; quantity: number }[]) {
-    db.transaction((tx) => {
-      tx.delete(kitItems).where(eq(kitItems.kitId, kitId)).run();
-      for (const l of lines) tx.insert(kitItems).values({ kitId, itemId: l.itemId, quantity: l.quantity ?? 1 }).run();
-    });
+    unwrap(await supabase.rpc("replace_kit_items", { p: { kitId, lines } }));
   }
   async listKitItems(kitId: number) {
-    return db.select().from(kitItems).where(eq(kitItems.kitId, kitId)).all();
+    return unwrap(await supabase.from(T.kitItems).select("*").eq("kitId", kitId)) as KitItem[];
   }
   async createKitItem(ki: InsertKitItem) {
-    return db.insert(kitItems).values(ki).returning().get();
+    return unwrap(await supabase.from(T.kitItems).insert(ki).select().single()) as KitItem;
   }
   async deleteKitItem(id: number) {
-    db.delete(kitItems).where(eq(kitItems.id, id)).run();
+    unwrap(await supabase.from(T.kitItems).delete().eq("id", id));
   }
 
   // ---- audit ----
   async listAudit(limit = 200) {
-    return db.select().from(auditLog).orderBy(desc(auditLog.timestamp)).limit(limit).all();
+    return unwrap(await supabase.from(T.auditLog).select("*").order("timestamp", { ascending: false }).limit(limit)) as AuditEntry[];
   }
   async addAudit(a: InsertAudit) {
-    return db.insert(auditLog).values(a).returning().get();
+    return unwrap(await supabase.from(T.auditLog).insert(a).select().single()) as AuditEntry;
   }
 }
 
