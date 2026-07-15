@@ -29,6 +29,7 @@ import "dotenv/config";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createClient } from "@supabase/supabase-js";
+import ws from "ws";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
@@ -41,6 +42,8 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 const APP_DB_SECRET = process.env.APP_DB_SECRET;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
+  // Node 20 has no global WebSocket; realtime is unused but must not throw.
+  realtime: { transport: ws as unknown as typeof WebSocket },
   ...(APP_DB_SECRET
     ? { global: { headers: { "x-app-secret": APP_DB_SECRET } } }
     : {}),
