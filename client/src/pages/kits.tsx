@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient, errorMessage } from "@/lib/queryClient";
-import { useApp } from "@/lib/app-context";
+import { useApp, can } from "@/lib/app-context";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import type { Officer, Item, ItemUnit, ItemVariant } from "@shared/schema";
 import { isDualSerialItem } from "@/components/serial-units-dialog";
@@ -18,7 +18,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Boxes, Trash2, Send, X } from "lucide-react";
+import { Plus, Boxes, Trash2, Send, X, Pencil } from "lucide-react";
 
 interface KitWithItems { id: number; name: string; description?: string; items: { id: number; itemId: number; quantity: number }[]; }
 
@@ -30,10 +30,12 @@ export default function Kits() {
   const { data: officers } = useQuery<Officer[]>({ queryKey: ["/api/officers"] });
 
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [lines, setLines] = useState<{ itemId: string; quantity: number }[]>([{ itemId: "", quantity: 1 }]);
   const [saving, setSaving] = useState(false);
+  const canManage = can.issueReturn(user?.role);
 
   const [issueKit, setIssueKit] = useState<KitWithItems | null>(null);
   const [issueOfficer, setIssueOfficer] = useState("");
@@ -52,18 +54,32 @@ export default function Kits() {
 
   function openIssue(k: KitWithItems) { setIssueKit(k); setIssueOfficer(""); setUnitSelections({}); setVariantSelections({}); }
 
+  function resetKitForm() { setName(""); setDesc(""); setLines([{ itemId: "", quantity: 1 }]); setEditingId(null); }
+
+  function openEdit(k: KitWithItems) {
+    setEditingId(k.id);
+    setName(k.name);
+    setDesc(k.description ?? "");
+    setLines(k.items.length ? k.items.map((l) => ({ itemId: String(l.itemId), quantity: l.quantity })) : [{ itemId: "", quantity: 1 }]);
+    setCreating(true);
+  }
+
+  function onCreateOpenChange(open: boolean) { setCreating(open); if (!open) resetKitForm(); }
+
   async function saveKit() {
     const valid = lines.filter((l) => l.itemId);
     if (!name || valid.length === 0) return toast({ title: "Add a name and at least one item", variant: "destructive" });
     setSaving(true);
     try {
-      await apiRequest("POST", "/api/kits", {
+      const payload = {
         name, description: desc, actor: user?.name,
         items: valid.map((l) => ({ itemId: Number(l.itemId), quantity: Number(l.quantity) || 1 })),
-      });
+      };
+      if (editingId != null) await apiRequest("PATCH", `/api/kits/${editingId}`, payload);
+      else await apiRequest("POST", "/api/kits", payload);
       queryClient.invalidateQueries({ queryKey: ["/api/kits"] });
-      toast({ title: "Kit template created" });
-      setCreating(false); setName(""); setDesc(""); setLines([{ itemId: "", quantity: 1 }]);
+      toast({ title: editingId != null ? "Kit template updated" : "Kit template created" });
+      setCreating(false); resetKitForm();
     } catch (e: any) {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
     } finally { setSaving(false); }
@@ -122,6 +138,8 @@ export default function Kits() {
                     <p className="text-xs text-muted-foreground">{k.items.length} items</p>
                   </div>
                 </div>
+                <div className="flex items-center gap-1">
+                {canManage && <Button variant="ghost" size="icon" onClick={() => openEdit(k)} data-testid={`button-edit-kit-${k.id}`}><Pencil className="h-4 w-4" /></Button>}
                 <AlertDialog>
                   <AlertDialogTrigger asChild><Button variant="ghost" size="icon" data-testid={`button-delete-kit-${k.id}`}><Trash2 className="h-4 w-4 text-destructive" /></Button></AlertDialogTrigger>
                   <AlertDialogContent>
@@ -129,6 +147,7 @@ export default function Kits() {
                     <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => deleteKit(k.id)}>Delete</AlertDialogAction></AlertDialogFooter>
                   </AlertDialogContent>
                 </AlertDialog>
+                </div>
               </div>
               {k.description && <p className="mt-2 text-sm text-muted-foreground">{k.description}</p>}
               <div className="mt-3 flex flex-wrap gap-1.5">
@@ -143,9 +162,9 @@ export default function Kits() {
       )}
 
       {/* Create kit dialog */}
-      <Dialog open={creating} onOpenChange={setCreating}>
+      <Dialog open={creating} onOpenChange={onCreateOpenChange}>
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader><DialogTitle>New Kit Template</DialogTitle><DialogDescription>Bundle items into a reusable standard-issue set.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>{editingId != null ? "Edit Kit Template" : "New Kit Template"}</DialogTitle><DialogDescription>Bundle items into a reusable standard-issue set.</DialogDescription></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5"><Label>Kit name</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. New Patrol Officer Standard Issue" data-testid="input-kit-name" /></div>
             <div className="space-y-1.5"><Label>Description</Label><Textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} /></div>
@@ -165,8 +184,8 @@ export default function Kits() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button onClick={saveKit} disabled={saving} data-testid="button-save-kit">{saving ? "Saving…" : "Create Kit"}</Button>
+            <Button variant="outline" onClick={() => onCreateOpenChange(false)}>Cancel</Button>
+            <Button onClick={saveKit} disabled={saving} data-testid="button-save-kit">{saving ? "Saving…" : editingId != null ? "Save Changes" : "Create Kit"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

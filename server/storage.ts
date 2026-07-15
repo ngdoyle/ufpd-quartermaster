@@ -253,11 +253,14 @@ export interface IStorage {
   deleteAssignmentsByOfficer(officerId: number): Promise<void>;
   // kits
   listKits(): Promise<Kit[]>;
+  getKit(id: number): Promise<Kit | undefined>;
   createKit(k: InsertKit): Promise<Kit>;
+  updateKit(id: number, k: Partial<InsertKit>): Promise<Kit | undefined>;
   deleteKit(id: number): Promise<void>;
   listKitItems(kitId: number): Promise<KitItem[]>;
   createKitItem(ki: InsertKitItem): Promise<KitItem>;
   deleteKitItem(id: number): Promise<void>;
+  replaceKitItems(kitId: number, lines: { itemId: number; quantity: number }[]): Promise<void>;
   // audit
   listAudit(limit?: number): Promise<AuditEntry[]>;
   addAudit(a: InsertAudit): Promise<AuditEntry>;
@@ -427,12 +430,24 @@ export class DatabaseStorage implements IStorage {
   async listKits() {
     return db.select().from(kits).all();
   }
+  async getKit(id: number) {
+    return db.select().from(kits).where(eq(kits.id, id)).get();
+  }
   async createKit(k: InsertKit) {
     return db.insert(kits).values(k).returning().get();
+  }
+  async updateKit(id: number, k: Partial<InsertKit>) {
+    return db.update(kits).set(k).where(eq(kits.id, id)).returning().get();
   }
   async deleteKit(id: number) {
     db.delete(kitItems).where(eq(kitItems.kitId, id)).run();
     db.delete(kits).where(eq(kits.id, id)).run();
+  }
+  async replaceKitItems(kitId: number, lines: { itemId: number; quantity: number }[]) {
+    db.transaction((tx) => {
+      tx.delete(kitItems).where(eq(kitItems.kitId, kitId)).run();
+      for (const l of lines) tx.insert(kitItems).values({ kitId, itemId: l.itemId, quantity: l.quantity ?? 1 }).run();
+    });
   }
   async listKitItems(kitId: number) {
     return db.select().from(kitItems).where(eq(kitItems.kitId, kitId)).all();

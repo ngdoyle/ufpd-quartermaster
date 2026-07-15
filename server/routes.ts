@@ -616,6 +616,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     await storage.deleteKit(Number(req.params.id));
     res.json({ ok: true });
   });
+  app.patch("/api/kits/:id", writeGuard, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const existing = await storage.getKit(id);
+      if (!existing) return res.status(404).json({ message: "Not found" });
+      const data = insertKitSchema.partial().parse(req.body);
+      if (Object.keys(data).length) await storage.updateKit(id, data);
+      if (req.body.items !== undefined) {
+        const lineSchema = z.object({ itemId: z.number(), quantity: z.number().optional() });
+        const lines = z.array(lineSchema).parse(req.body.items).map((l) => ({ itemId: l.itemId, quantity: l.quantity ?? 1 }));
+        await storage.replaceKitItems(id, lines);
+      }
+      const k = await storage.getKit(id);
+      await audit("update_kit", "kit", id, `Updated kit template "${k?.name}"`, req.body.actor);
+      res.json({ ...k, items: await storage.listKitItems(id) });
+    } catch (e) { handleErr(e, res); }
+  });
 
   // Issue an entire kit to an officer. For serialized (`unique`) items the
   // caller must pick a specific in-stock unit per item via `unitSelections`
