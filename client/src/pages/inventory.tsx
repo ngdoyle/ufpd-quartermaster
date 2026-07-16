@@ -66,6 +66,7 @@ export default function Inventory() {
   const [cat, setCat] = useState("all");
   const [type, setType] = useState("all");
   const [status, setStatus] = useState("all");
+  const [loc, setLoc] = useState("all");
   const [form, setForm] = useState<Partial<Item> | null>(null);
   const [attrs, setAttrs] = useState<Record<string, string>>({});
   const [qr, setQr] = useState<Item | null>(null);
@@ -117,10 +118,18 @@ export default function Inventory() {
     return items.filter((i) =>
       (cat === "all" || i.category === cat) &&
       (type === "all" || i.type === type) &&
+      (loc === "all" || i.location === loc) &&
       matchesStatus(i) &&
       (!term || [i.name, i.sku, i.serialNumber, i.vendor, i.location].some((f) => f?.toLowerCase().includes(term)))
     );
-  }, [items, q, cat, type, status]);
+  }, [items, q, cat, type, status, loc]);
+
+  // Location filter: distinct, non-empty locations from loaded items, A→Z.
+  const locationOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const i of items ?? []) if (i.location?.trim()) set.add(i.location.trim());
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [items]);
 
   // Filter dropdown: union of the configured categories and any categories
   // present in existing (legacy) data, so older seed items still filter.
@@ -234,6 +243,7 @@ export default function Inventory() {
             options={[["consumable", "Consumable"], ["returnable", "Returnable"], ["unique", "Serialized"], ["sized", "Sized (clothing)"]]} />
           <FilterSelect value={status} onChange={setStatus} placeholder="Status"
             options={[["in_stock", "In Stock"], ["issued", "Issued"], ["maintenance", "Maintenance"], ["retired", "Retired"], ["low_stock", "Low Stock"]]} />
+          <FilterSelect value={loc} onChange={setLoc} placeholder="Location" options={locationOptions} />
         </div>
       </Card>
 
