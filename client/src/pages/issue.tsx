@@ -22,8 +22,18 @@ import {
   AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
 import { Input as In } from "@/components/ui/input";
+import { ScannerDialog } from "@/components/scanner-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowUpRight, ArrowDownLeft, Search, PackageCheck, Plus, Trash2, ShoppingCart } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Search, PackageCheck, Plus, Trash2, ShoppingCart, ScanLine } from "lucide-react";
+
+/** Parse a scanned value. Accepts "QM:item:<id>", a bare number, or a SKU/serial string. */
+function parseScan(raw: string): { id?: number; sku?: string } {
+  const t = raw.trim();
+  const m = t.match(/^QM:item:(\d+)$/i);
+  if (m) return { id: Number(m[1]) };
+  if (/^\d+$/.test(t)) return { id: Number(t) };
+  return { sku: t };
+}
 
 type CartLine = {
   id: string;
@@ -88,6 +98,8 @@ export default function IssueReturn() {
   const [lineErrors, setLineErrors] = useState<Record<string, string>>({});
   // officer to switch to, pending confirmation while the cart is non-empty
   const [pendingOfficer, setPendingOfficer] = useState<string | null>(null);
+  // QR scan-to-cart dialog (#9)
+  const [scanOpen, setScanOpen] = useState(false);
 
   // return state
   const [returnFor, setReturnFor] = useState<Assignment | null>(null);
@@ -279,6 +291,77 @@ export default function IssueReturn() {
     }
     setLineErrors({});
     resetItemPickers();
+  }
+
+  // Add a specific serialized unit to the cart (from a scanned unit serial).
+  // Respects availability: the unit must be in stock and not already carted.
+  function addScannedUnit(item: ItemWithStock, unit: ItemUnit) {
+    if (unit.status !== "in_stock")
+      return toast({ title: "Serial not available", description: `${unit.serialNumber} is ${unit.status.replace(/_/g, " ")}.`, variant: "destructive" });
+    if (cartedUnitIds.has(unit.id))
+      return toast({ title: "Already in cart", description: `Serial ${unit.serialNumber} is already in the cart.`, variant: "destructive" });
+    const label = unitLabel(unit, isDualSerialItem(item));
+    setLines((prev) => [...prev, {
+      id: crypto.randomUUID(), itemId: item.id, itemName: item.name, categoryLabel: item.category || "Uncategorized",
+      quantity: 1, itemUnitId: unit.id, unitSerial: label, itemType: item.type, availStock: 1,
+    }]);
+    setLineErrors({});
+    toast({ title: "Added to cart", description: `${item.name} · ${label}` });
+  }
+
+  // Add an item-level scan to the cart. Serialized/sized items land in a
+  // "needs selection" state (the scanned code doesn't name a serial/size);
+  // consumable/standard items add one unit, respecting available stock.
+  function addScannedItem(item: ItemWithStock) {
+    if (item.status === "retired" || item.status === "maintenance")
+      return toast({ title: "Item unavailable", description: `${item.name} is ${item.status}.`, variant: "destructive" });
+    if (item.type === "unique" || item.type === "sized") {
+      setLines((prev) => [...prev, {
+        id: crypto.randomUUID(), itemId: item.id, itemName: item.name, categoryLabel: item.category || "Uncategorized",
+        quantity: 1, itemType: item.type, needsSelection: true,
+      }]);
+      setLineErrors({});
+      return toast({ title: "Added to cart", description: `${item.name} — pick a ${item.type === "unique" ? "serial" : "size"} in the cart.` });
+    }
+    const avail = (item.onHand ?? item.quantity) - cartedItemQty(item.id);
+    if (avail < 1)
+      return toast({ title: "Out of stock", description: `No more ${item.name} available to add.`, variant: "destructive" });
+    setLines((prev) => {
+      const idx = prev.findIndex((l) => l.itemId === item.id && !l.itemVariantId && !l.itemUnitId);
+      if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + 1 }; return c; }
+      return [...prev, { id: crypto.randomUUID(), itemId: item.id, itemName: item.name, categoryLabel: item.category || "Uncategorized", quantity: 1, itemType: item.type, availStock: avail }];
+    });
+    setLineErrors({});
+    toast({ title: "Added to cart", description: item.name });
+  }
+
+  // Resolve a scanned code and add it to the cart (#9). Tries an item-level
+  // match first (QM:item:<id>, bare id, SKU, or item serial), then falls back to
+  // matching a serialized unit's serial across the unique items.
+  async function handleScan(raw: string) {
+    if (!officerId) return toast({ title: "Select an officer first", description: "Choose who the items are for before scanning.", variant: "destructive" });
+    const list = items ?? [];
+    const { id, sku } = parseScan(raw);
+    let item: ItemWithStock | undefined;
+    if (id != null) item = list.find((i) => i.id === id);
+    if (!item && sku) {
+      const s = sku.toLowerCase();
+      item = list.find((i) => (i.sku ?? "").toLowerCase() === s || (i.serialNumber ?? "").toLowerCase() === s);
+    }
+    if (item) return addScannedItem(item);
+
+    if (sku) {
+      const needle = sku.toLowerCase();
+      for (const uniq of list.filter((i) => i.type === "unique")) {
+        try {
+          const units = await queryClient.fetchQuery<ItemUnit[]>({ queryKey: ["/api/items", uniq.id, "units"] });
+          const unit = (units ?? []).find((u) =>
+            (u.serialNumber ?? "").toLowerCase() === needle || (u.secondarySerialNumber ?? "").toLowerCase() === needle);
+          if (unit) return addScannedUnit(uniq, unit);
+        } catch { /* skip items whose units can't be fetched */ }
+      }
+    }
+    toast({ title: "No match", description: `Nothing matched "${raw}".`, variant: "destructive" });
   }
 
   function removeFromCart(id: string) {
@@ -579,9 +662,14 @@ export default function IssueReturn() {
                   value={qty} onChange={(e) => setQty(Number(e.target.value))} disabled={selectedItem?.type === "unique"} data-testid="input-issue-qty" />
               </div>
 
-              <Button className="w-full" variant="outline" onClick={addToCart} disabled={!itemId} data-testid="button-add-to-cart">
-                <Plus className="mr-1.5 h-4 w-4" /> Add to Cart
-              </Button>
+              <div className="flex gap-2">
+                <Button className="flex-1" variant="outline" onClick={addToCart} disabled={!itemId} data-testid="button-add-to-cart">
+                  <Plus className="mr-1.5 h-4 w-4" /> Add to Cart
+                </Button>
+                <Button variant="outline" onClick={() => setScanOpen(true)} disabled={!officerId} data-testid="button-scan-to-cart">
+                  <ScanLine className="mr-1.5 h-4 w-4" /> Scan item
+                </Button>
+              </div>
             </div>
           </Card>
 
@@ -699,6 +787,15 @@ export default function IssueReturn() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* QR scan-to-cart (#9) */}
+      <ScannerDialog
+        open={scanOpen}
+        onOpenChange={setScanOpen}
+        onScan={handleScan}
+        title="Scan to cart"
+        description="Scan an item QR code or a serialized unit to add it to the current cart. Keep scanning to add more."
+      />
 
       {/* Officer switch confirm — a cart belongs to one officer */}
       <AlertDialog open={pendingOfficer !== null} onOpenChange={(o) => !o && setPendingOfficer(null)}>
