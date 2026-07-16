@@ -664,6 +664,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // item atomically per submission, reusing the same quantity-sync paths as the
   // units and variants routes. Produces a detailed `restock: …` audit entry.
   app.post("/api/items/:id/restock", writeGuard, async (req, res) => {
+    // Coerce to a safe positive integer — rejects NaN/Infinity/negatives and
+    // caps absurd values so arithmetic can never overflow or poison totals.
+    const toAdd = (v: any) => {
+      const n = Math.floor(Number(v));
+      return Number.isSafeInteger(n) && n > 0 && n <= 1_000_000 ? n : 0;
+    };
     try {
       const itemId = Number(req.params.id);
       const item = await storage.getItem(itemId);
@@ -725,7 +731,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       } else if (item.type === "sized") {
         // Per-size additions; create a brand-new size row when it doesn't exist.
         const sizes: { size: string; addQuantity: number }[] = Array.isArray(req.body?.sizes)
-          ? req.body.sizes.map((s: any) => ({ size: String(s?.size ?? "").trim(), addQuantity: Math.floor(Number(s?.addQuantity) || 0) }))
+          ? req.body.sizes.map((s: any) => ({ size: String(s?.size ?? "").trim(), addQuantity: toAdd(s?.addQuantity) }))
           : [];
         const adds = sizes.filter((s) => s.size !== "" && s.addQuantity > 0);
         if (adds.length === 0) return res.status(400).json({ message: "Enter a positive quantity for at least one size." });
@@ -746,8 +752,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         detail = `restock: ${parts.join(", ")}`;
       } else {
         // Quantity-tracked (consumable / returnable).
-        const add = Math.floor(Number(req.body?.addQuantity) || 0);
-        if (add <= 0) return res.status(400).json({ message: "Quantity to add must be a positive integer." });
+        const add = toAdd(req.body?.addQuantity);
+        if (add <= 0) return res.status(400).json({ message: "Quantity to add must be a positive integer (max 1,000,000)." });
         const before = item.quantity;
         const after = before + add;
         await storage.updateItem(itemId, { quantity: after });
