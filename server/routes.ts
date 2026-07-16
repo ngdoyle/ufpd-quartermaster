@@ -796,7 +796,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { handleErr(e, res); }
   });
   app.delete("/api/kits/:id", writeGuard, async (req, res) => {
+    const before = await storage.getKit(Number(req.params.id));
     await storage.deleteKit(Number(req.params.id));
+    await audit("delete_kit", "kit", Number(req.params.id), `Deleted kit template "${before?.name ?? `#${req.params.id}`}"`, req.query.actor as string);
     res.json({ ok: true });
   });
   app.patch("/api/kits/:id", writeGuard, async (req, res) => {
@@ -806,13 +808,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!existing) return res.status(404).json({ message: "Not found" });
       const data = insertKitSchema.partial().parse(req.body);
       if (Object.keys(data).length) await storage.updateKit(id, data);
+      let linesChanged = false;
       if (req.body.items !== undefined) {
         const lineSchema = z.object({ itemId: z.number(), quantity: z.number().optional() });
         const lines = z.array(lineSchema).parse(req.body.items).map((l) => ({ itemId: l.itemId, quantity: l.quantity ?? 1 }));
         await storage.replaceKitItems(id, lines);
+        linesChanged = true;
       }
       const k = await storage.getKit(id);
-      await audit("update_kit", "kit", id, `Updated kit template "${k?.name}"`, req.body.actor);
+      const diff = diffDetail(existing, k, data);
+      const extra = [diff, linesChanged ? "lines replaced" : ""].filter(Boolean).join(", ");
+      await audit("update_kit", "kit", id, `Updated kit template "${k?.name}"${extra ? ` — ${extra}` : ""}`, req.body.actor);
       res.json({ ...k, items: await storage.listKitItems(id) });
     } catch (e) { handleErr(e, res); }
   });
