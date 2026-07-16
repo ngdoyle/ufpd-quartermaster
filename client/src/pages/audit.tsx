@@ -32,7 +32,7 @@ export default function Audit() {
               <li key={e.id} className="flex items-start gap-3 px-4 py-3" data-testid={`audit-${e.id}`}>
                 <Pill tone={TONE[e.action] ?? "gray"}>{e.action.replace(/_/g, " ")}</Pill>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm leading-snug">{e.detail}</p>
+                  <p className="whitespace-pre-wrap break-words text-sm leading-snug">{e.detail}</p>
                   <p className="text-[11px] text-muted-foreground">{e.username ?? "system"} · {fmtDateTime(e.timestamp)}</p>
                 </div>
               </li>
