@@ -2,6 +2,7 @@ import { PageHeader, Pill } from "@/components/bits";
 import { Card } from "@/components/ui/card";
 import {
   ShieldCheck, FileLock2, CircleCheck, CircleDashed, CircleDot, ExternalLink,
+  ListChecks, Mail, Server,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -36,6 +37,29 @@ const CONTROLS: Control[] = [
   { control: "Single sign-on readiness", detail: "Pluggable auth layer with AUTH_MODE switch; GatorLink / Shibboleth drops in without code changes. Live SP registration remaining.", status: "PARTIAL" },
   { control: "Vulnerability scanning", detail: "0 production dependency vulnerabilities; 4 high advisories are dev-only (esbuild / vite / drizzle-kit). UF self-service scan pending.", status: "PARTIAL" },
   { control: "TLS in transit", detail: "Provided at the platform layer once deployed to a *.rc.ufl.edu PubApps host.", status: "PENDING" },
+];
+
+// Feature/change summary across the four polish batches (through Jul 16, 2026).
+const BATCH_SUMMARY: { batch: string; items: string }[] = [
+  { batch: "Batch 1", items: "Core hardening — bcrypt auth, rate-limited login, 30-minute session timeout, append-only audit log, security headers." },
+  { batch: "Batch 2", items: "Issue/return receipts (PDF), dashboard alerts, expiration and low-stock tracking, reports." },
+  { batch: "Batch 3", items: "Serialized units (incl. dual-serial vests), sized clothing variants, kits, and multi-line issue cart." },
+  { batch: "Batch 4", items: "UFPD Quartermaster branding, comprehensive form validation + phone normalization, role capability matrix, QR scan-to-cart, provider-agnostic email subsystem, and this compliance refresh." },
+];
+
+// Email subsystem provider modes (#18).
+const EMAIL_MODES: { mode: string; detail: string }[] = [
+  { mode: "log (default)", detail: "Every message is recorded in the email log but not delivered — safe out of the box, no credentials required." },
+  { mode: "resend", detail: "Delivers via the Resend HTTP API (RESEND_API_KEY + EMAIL_FROM). Each attempt is logged as sent or failed." },
+  { mode: "smtp", detail: "Delivers via department SMTP (SMTP_HOST/PORT/USER/PASS/SECURE + EMAIL_FROM) — the intended mode on the UF server." },
+];
+
+// Steps to migrate off the disposable dev stack onto department infrastructure.
+const MIGRATION_STEPS: string[] = [
+  "Move the database to a department-managed Postgres / Supabase instance and repoint SUPABASE_URL / keys.",
+  "Set EMAIL_PROVIDER=smtp with the department SMTP credentials (host, port, user, password, from address).",
+  "Rotate APP_DB_SECRET and reset all user account passwords after cutover.",
+  "Update the keep-alive / uptime monitoring to target the new host and verify audit logging continues.",
 ];
 
 const REFS: { label: string; url: string }[] = [
@@ -131,6 +155,62 @@ export default function Compliance() {
         and are unblocked once an IRM Risk Assessment number is issued, which gates SSO Service-Provider registration and
         Research Computing PubApps deployment.
       </p>
+
+      <div className="mt-6 mb-3 flex items-center gap-2">
+        <ListChecks className="h-4 w-4 text-primary" />
+        <h3 className="text-sm font-semibold tracking-tight">Feature summary — Batches 1–4</h3>
+        <span className="text-xs text-muted-foreground">as of Jul 16, 2026</span>
+      </div>
+      <Card className="overflow-hidden" data-testid="card-batch-summary">
+        <ul className="divide-y divide-border">
+          {BATCH_SUMMARY.map((b, i) => (
+            <li key={i} className="flex items-start gap-3 px-4 py-3">
+              <Pill tone="blue">{b.batch}</Pill>
+              <p className="min-w-0 flex-1 text-[13px] leading-snug text-muted-foreground">{b.items}</p>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
+      <div className="mt-6 mb-3 flex items-center gap-2">
+        <Mail className="h-4 w-4 text-primary" />
+        <h3 className="text-sm font-semibold tracking-tight">Email subsystem</h3>
+      </div>
+      <Card className="p-4" data-testid="card-email-modes">
+        <p className="mb-3 text-[13px] leading-relaxed text-muted-foreground">
+          Outbound email is provider-agnostic and ships in log-only mode: no messages leave the system until a provider is
+          configured. Every send — issuance receipts, overdue-return reminders, and low-stock reports — is recorded in the
+          email log with its status, and all sends are restricted to administrators and quartermasters and captured in the
+          Activity Log.
+        </p>
+        <ul className="divide-y divide-border rounded-md border border-border">
+          {EMAIL_MODES.map((m, i) => (
+            <li key={i} className="flex items-start gap-3 px-3 py-2.5">
+              <Pill tone={i === 0 ? "green" : "gray"}>{m.mode}</Pill>
+              <p className="min-w-0 flex-1 text-[13px] leading-snug text-muted-foreground">{m.detail}</p>
+            </li>
+          ))}
+        </ul>
+      </Card>
+
+      <div className="mt-6 mb-3 flex items-center gap-2">
+        <Server className="h-4 w-4 text-primary" />
+        <h3 className="text-sm font-semibold tracking-tight">UF server migration</h3>
+      </div>
+      <Card className="p-4" data-testid="card-migration">
+        <p className="mb-3 text-[13px] leading-relaxed text-muted-foreground">
+          Steps to move from the current disposable stack onto department-managed infrastructure when the IRM Risk Assessment
+          clears deployment:
+        </p>
+        <ol className="space-y-2">
+          {MIGRATION_STEPS.map((s, i) => (
+            <li key={i} className="flex items-start gap-3 text-[13px] leading-snug text-muted-foreground">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/10 text-[11px] font-medium text-primary">{i + 1}</span>
+              <span className="min-w-0 flex-1">{s}</span>
+            </li>
+          ))}
+        </ol>
+      </Card>
 
       <h3 className="mt-6 mb-3 text-sm font-semibold tracking-tight">References</h3>
       <Card className="p-4">
