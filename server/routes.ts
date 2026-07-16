@@ -250,15 +250,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.patch("/api/users/:id", adminGuard, async (req, res) => {
     // If a password is being set/reset here, hash it before persisting.
-    const patch = { ...req.body };
+    const { actor, ...patch } = req.body ?? {};
     const pwChanged = !!patch.password;
     if (patch.password) patch.password = hashPassword(patch.password);
     const before = await storage.getUser(Number(req.params.id));
     const u = await storage.updateUser(Number(req.params.id), patch);
     if (!u) return res.status(404).json({ message: "Not found" });
-    const diff = diffDetail(before, u, req.body, ["password"]);
+    const diff = diffDetail(before, u, patch, ["password"]);
     const changes = [diff, pwChanged ? "password changed" : ""].filter(Boolean).join(", ");
-    await audit("update_user", "user", u.id, `Updated account ${u.username}${changes ? ` — ${changes}` : ""}`, req.body.actor);
+    await audit("update_user", "user", u.id, `Updated account ${u.username}${changes ? ` — ${changes}` : ""}`, actor);
     res.json(stripPw(u));
   });
   app.delete("/api/users/:id", adminGuard, async (req, res) => {
@@ -303,11 +303,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ created, errors });
   });
   app.patch("/api/officers/:id", writeGuard, async (req, res) => {
+    const { actor, ...patch } = req.body ?? {};
     const before = await storage.getOfficer(Number(req.params.id));
-    const o = await storage.updateOfficer(Number(req.params.id), req.body);
+    const o = await storage.updateOfficer(Number(req.params.id), patch);
     if (!o) return res.status(404).json({ message: "Not found" });
-    const diff = diffDetail(before, o, req.body);
-    await audit("update_officer", "officer", o.id, `Updated officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})${diff ? ` — ${diff}` : ""}`, req.body.actor);
+    const diff = diffDetail(before, o, patch);
+    await audit("update_officer", "officer", o.id, `Updated officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})${diff ? ` — ${diff}` : ""}`, actor);
     res.json(o);
   });
   app.delete("/api/officers/:id", adminGuard, async (req, res) => {
@@ -451,11 +452,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ created, errors });
   });
   app.patch("/api/items/:id", writeGuard, async (req, res) => {
+    const { actor, ...patch } = req.body ?? {};
     const before = await storage.getItem(Number(req.params.id));
-    const i = await storage.updateItem(Number(req.params.id), req.body);
+    const i = await storage.updateItem(Number(req.params.id), patch);
     if (!i) return res.status(404).json({ message: "Not found" });
-    const diff = diffDetail(before, i, req.body);
-    await audit("update_item", "item", i.id, `Updated item "${i.name}"${diff ? ` — ${diff}` : ""}`, req.body.actor);
+    const diff = diffDetail(before, i, patch);
+    await audit("update_item", "item", i.id, `Updated item "${i.name}"${diff ? ` — ${diff}` : ""}`, actor);
     res.json(i);
   });
   app.delete("/api/items/:id", writeGuard, async (req, res) => {
