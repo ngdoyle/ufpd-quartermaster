@@ -29,6 +29,8 @@ import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { SerialUnitsDialog } from "@/components/serial-units-dialog";
 import { SizeVariantsDialog } from "@/components/size-variants-dialog";
 import { LOCATIONS } from "@/lib/constants";
+import { isWholeNonNeg, isMoneyNonNeg } from "@shared/validation";
+import { AlertTriangle } from "lucide-react";
 import {
   ITEM_CATEGORIES, ITEM_SUBCATEGORIES, getItemFields, parseAttributes, attributeSummary,
   ATTRIBUTE_COLUMNS, buildImportAttributes,
@@ -56,6 +58,22 @@ function isVisibleField(f: DynField, type: string | undefined, attrs: Record<str
   return true;
 }
 
+// Required set + numeric format checks for inventory items (#19). `missing` are
+// empty required fields; `invalid` are present values that fail a format rule.
+function itemFieldErrors(f: Partial<Item>) {
+  const missing: Record<string, string> = {};
+  const invalid: Record<string, string> = {};
+  const has = (v: unknown) => String(v ?? "").trim().length > 0;
+  if (!has(f.name)) missing.name = "Name";
+  if (!has(f.category)) missing.category = "Category";
+  if (!has(f.type)) missing.type = "Type";
+  if (!has(f.location)) missing.location = "Location";
+  if (f.type !== "sized" && !isWholeNonNeg(f.quantity)) invalid.quantity = "Quantity must be a whole number ≥ 0";
+  if (!isWholeNonNeg(f.parLevel)) invalid.parLevel = "PAR must be a whole number ≥ 0";
+  if (!isMoneyNonNeg(f.unitCost)) invalid.unitCost = "Unit cost must be a dollar amount ≥ 0";
+  return { missing, invalid };
+}
+
 export default function Inventory() {
   const { user } = useApp();
   const { toast } = useToast();
@@ -73,11 +91,13 @@ export default function Inventory() {
   const [serialsFor, setSerialsFor] = useState<InvItem | null>(null);
   const [sizesFor, setSizesFor] = useState<InvItem | null>(null);
   const [saving, setSaving] = useState(false);
+  const [triedSave, setTriedSave] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [addExistingOpen, setAddExistingOpen] = useState(false);
 
-  function openAdd() { setAttrs({}); setForm(blank()); }
-  function openEdit(i: Item) { setAttrs(parseAttributes(i.attributes)); setForm(i); }
+  function openAdd() { setAttrs({}); setTriedSave(false); setForm(blank()); }
+  function openEdit(i: Item) { setAttrs(parseAttributes(i.attributes)); setTriedSave(false); setForm(i); }
+  function closeForm() { setForm(null); setAttrs({}); setTriedSave(false); }
   function changeCategory(v: string) {
     setAttrs({});
     setForm((f) => (f ? { ...f, category: v, subcategory: "", serialNumber: "", color: "", size: "", expirationDate: "", lastInspected: "" } : f));
@@ -149,8 +169,28 @@ export default function Inventory() {
   const visibleDynFields = dynFields.filter((f) => isVisibleField(f, form?.type, attrs));
   const hasHiddenSerialField = form?.type === "unique" && dynFields.some((f) => LEGACY_SERIAL_KEYS.has(f.key) && (!f.showIf || f.showIf(attrs)));
 
+  const formEditing = !!form?.id;
+  const formErrs = form ? itemFieldErrors(form) : { missing: {}, invalid: {} };
+  const errFor = (k: string): string | undefined => {
+    if (!triedSave) return undefined;
+    if (formErrs.invalid[k]) return formErrs.invalid[k];
+    if (!formEditing && formErrs.missing[k]) return `${formErrs.missing[k]} is required`;
+    return undefined;
+  };
+  const legacyIssues = formEditing ? Object.values(formErrs.missing) : [];
+
   async function save() {
-    if (!form?.name) return toast({ title: "Name is required", variant: "destructive" });
+    if (!form) return;
+    setTriedSave(true);
+    const isEditing = !!form.id;
+    const { missing, invalid } = itemFieldErrors(form);
+    if (!isEditing) {
+      const firstMissing = Object.values(missing)[0];
+      if (firstMissing) return toast({ title: `${firstMissing} is required`, variant: "destructive" });
+    }
+    // Bad numeric formats are always blocked (legacy data is already numeric).
+    const firstInvalid = Object.values(invalid)[0];
+    if (firstInvalid) return toast({ title: firstInvalid, variant: "destructive" });
     setSaving(true);
     try {
       const fields = getItemFields(form.category, form.subcategory);
@@ -180,7 +220,7 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
       toast({ title: form.id ? "Item updated" : "Item added" });
-      setForm(null); setAttrs({});
+      closeForm();
     } catch (e: any) {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
     } finally { setSaving(false); }
@@ -315,16 +355,23 @@ export default function Inventory() {
       )}
 
       {/* Add/Edit dialog */}
-      <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
+      <Dialog open={!!form} onOpenChange={(o) => !o && closeForm()}>
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{form?.id ? "Edit Item" : "Add Item"}</DialogTitle>
             <DialogDescription>Define the catalog record. Serialized items are unique (quantity 1).</DialogDescription>
           </DialogHeader>
+          {form && <div className="text-xs text-muted-foreground"><span className="text-destructive">*</span> required</div>}
+          {legacyIssues.length > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-chart-3/40 bg-chart-3/10 p-2.5 text-xs text-foreground" data-testid="text-legacy-warning">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-chart-3" />
+              <span>This item is missing required info: {legacyIssues.join(", ")}. You can still save, but please complete it when possible.</span>
+            </div>
+          )}
           {form && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field className="sm:col-span-2" label="Name"><Input value={form.name ?? ""} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-item-name" /></Field>
-              <Field label="Category">
+              <Field className="sm:col-span-2" label="Name" required error={errFor("name")}><Input value={form.name ?? ""} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-item-name" /></Field>
+              <Field label="Category" required error={errFor("category")}>
                 <Select value={form.category || undefined} onValueChange={changeCategory}>
                   <SelectTrigger data-testid="select-item-category"><SelectValue placeholder="Select category…" /></SelectTrigger>
                   <SelectContent>{categoryOptions.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
@@ -342,7 +389,7 @@ export default function Inventory() {
                   </Select>
                 </Field>
               )}
-              <Field label="Type">
+              <Field label="Type" required>
                 <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
                   <SelectTrigger data-testid="select-item-type"><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -365,21 +412,21 @@ export default function Inventory() {
                   </Select>
                 </Field>
               ) : (
-                <Field label="Quantity on hand"><Input type="number" value={form.quantity ?? 0} onChange={(e) => setForm({ ...form, quantity: e.target.value as any })} data-testid="input-item-qty" /></Field>
+                <Field label="Quantity on hand" required error={errFor("quantity")}><Input type="number" min={0} step={1} value={form.quantity ?? 0} onChange={(e) => setForm({ ...form, quantity: e.target.value as any })} data-testid="input-item-qty" /></Field>
               )}
-              <Field label="PAR / Reorder level"><Input type="number" value={form.parLevel ?? 0} onChange={(e) => setForm({ ...form, parLevel: e.target.value as any })} /></Field>
+              <Field label="PAR / Reorder level" error={errFor("parLevel")}><Input type="number" min={0} step={1} value={form.parLevel ?? 0} onChange={(e) => setForm({ ...form, parLevel: e.target.value as any })} /></Field>
               {form.type === "sized" && (
                 <p className="sm:col-span-2 rounded-md bg-muted/50 p-2.5 text-xs text-muted-foreground">
                   Stock is tracked per size — use "Manage Sizes" after saving this item.
                 </p>
               )}
-              <Field label="Location">
+              <Field label="Location" required error={errFor("location")}>
                 <Select value={form.location || undefined} onValueChange={(v) => setForm({ ...form, location: v })}>
                   <SelectTrigger data-testid="select-location"><SelectValue placeholder="Select location…" /></SelectTrigger>
                   <SelectContent>{LOCATIONS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
-              <Field label="Unit Cost ($)"><Input type="number" step="0.01" value={form.unitCost ?? 0} onChange={(e) => setForm({ ...form, unitCost: e.target.value as any })} /></Field>
+              <Field label="Unit Cost ($)" error={errFor("unitCost")}><Input type="number" step="0.01" min={0} value={form.unitCost ?? 0} onChange={(e) => setForm({ ...form, unitCost: e.target.value as any })} /></Field>
               <Field label="Vendor"><Input value={form.vendor ?? ""} onChange={(e) => setForm({ ...form, vendor: e.target.value })} /></Field>
               <Field label="Grant #"><Input value={form.grantNumber ?? ""} onChange={(e) => setForm({ ...form, grantNumber: e.target.value })} /></Field>
               <Field label="Condition">
@@ -419,7 +466,7 @@ export default function Inventory() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForm(null)}>Cancel</Button>
+            <Button variant="outline" onClick={closeForm}>Cancel</Button>
             <Button onClick={save} disabled={saving} data-testid="button-save-item">{saving ? "Saving…" : "Save"}</Button>
           </DialogFooter>
         </DialogContent>
@@ -862,8 +909,14 @@ function ItemRow({ item, editable, onEdit, onQr, onDelete, onInspect, onSerials,
   );
 }
 
-function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
-  return <div className={className}><Label className="mb-1.5 block text-xs">{label}</Label>{children}</div>;
+function Field({ label, children, className, required, error }: { label: string; children: React.ReactNode; className?: string; required?: boolean; error?: string }) {
+  return (
+    <div className={className}>
+      <Label className="mb-1.5 block text-xs">{label}{required && <span className="text-destructive"> *</span>}</Label>
+      {children}
+      {error && <p className="mt-1 text-xs text-destructive" data-testid="text-field-error">{error}</p>}
+    </div>
+  );
 }
 
 function FilterSelect({ value, onChange, placeholder, options }: {

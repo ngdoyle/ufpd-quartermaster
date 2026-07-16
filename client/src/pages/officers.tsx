@@ -26,11 +26,34 @@ import { Plus, Search, Pencil, Download, Upload, Shirt, Mail, Phone, Package, La
 import { MultiSelect } from "@/components/multi-select";
 import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { RANKS, UNITS, parseUnits, joinUnits, UNIT_CSV_SEPARATOR } from "@/lib/constants";
+import { isValidEmail, isValidPhone, normalizePhone, formatPhoneInput } from "@shared/validation";
+import { AlertTriangle } from "lucide-react";
 const blank = (): Partial<Officer> => ({
   badgeNumber: "", firstName: "", lastName: "", rank: "Officer", unit: "", email: "", phone: "",
   status: "active", hireDate: "", shirtSize: "", pantsSize: "", jacketSize: "", shoeSize: "",
   vestSize: "", hatSize: "", gloveSize: "", notes: "",
 });
+
+// Required set + format checks per the USER-APPROVED #19 spec. `missing` are
+// empty required fields; `invalid` are present values that fail a format rule.
+function fieldErrors(f: Partial<Officer>, business: boolean) {
+  const missing: Record<string, string> = {};
+  const invalid: Record<string, string> = {};
+  const has = (v: unknown) => String(v ?? "").trim().length > 0;
+  if (business) {
+    if (!has(f.firstName)) missing.firstName = "Business name";
+  } else {
+    if (!has(f.firstName)) missing.firstName = "First name";
+    if (!has(f.lastName)) missing.lastName = "Last name";
+    if (!has(f.badgeNumber)) missing.badgeNumber = "Badge number";
+    if (!has(f.unit)) missing.unit = "Rank/unit";
+    if (!has(f.email)) missing.email = "Email";
+    if (!has(f.phone)) missing.phone = "Phone";
+  }
+  if (has(f.email) && !isValidEmail(f.email)) invalid.email = "Enter a valid email address";
+  if (has(f.phone) && !isValidPhone(f.phone)) invalid.phone = "Enter a 10-digit US phone number";
+  return { missing, invalid };
+}
 
 export default function Officers() {
   const { user } = useApp();
@@ -46,6 +69,8 @@ export default function Officers() {
   const [form, setForm] = useState<Partial<Officer> | null>(null);
   const [detail, setDetail] = useState<Officer | null>(null);
   const [saving, setSaving] = useState(false);
+  const [triedSave, setTriedSave] = useState(false);
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [deleteTarget, setDeleteTarget] = useState<Officer | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -101,24 +126,53 @@ export default function Officers() {
   const itemById = (id: number) => items?.find((i) => i.id === id);
   const activeFor = (officerId: number) => (assignments ?? []).filter((a) => a.officerId === officerId && a.status === "active");
 
+  const formBiz = isBiz(form ?? { type: "person" });
+  const formEditing = !!form?.id;
+  const formErrs = form ? fieldErrors(form, formBiz) : { missing: {}, invalid: {} };
+  const errFor = (k: string): string | undefined => {
+    if (!triedSave) return undefined;
+    if (formErrs.invalid[k] && (formEditing ? touched[k] : true)) return formErrs.invalid[k];
+    if (!formEditing && formErrs.missing[k]) return `${formErrs.missing[k]} is required`;
+    return undefined;
+  };
+  const legacyIssues = formEditing
+    ? [
+        ...Object.values(formErrs.missing),
+        ...Object.entries(formErrs.invalid).filter(([k]) => !touched[k]).map(([, v]) => v),
+      ]
+    : [];
+  const markTouched = (k: string) => setTouched((t) => (t[k] ? t : { ...t, [k]: true }));
+  const closeForm = () => { setForm(null); setTriedSave(false); setTouched({}); };
+
   async function save() {
     const biz = isBiz(form ?? { type: "person" });
-    if (biz) {
-      if (!form?.firstName?.trim()) return toast({ title: "Business name is required", variant: "destructive" });
-    } else if (!form?.firstName || !form?.lastName || !form?.badgeNumber) {
-      return toast({ title: "Name and badge number are required", variant: "destructive" });
+    const isEditing = !!form?.id;
+    setTriedSave(true);
+    const { missing, invalid } = fieldErrors(form ?? {}, biz);
+    if (!isEditing) {
+      // CREATE — enforce the full required set + formats strictly.
+      const firstMissing = Object.values(missing)[0];
+      if (firstMissing) return toast({ title: `${firstMissing} is required`, variant: "destructive" });
+      const firstInvalid = Object.values(invalid)[0];
+      if (firstInvalid) return toast({ title: firstInvalid, variant: "destructive" });
+    } else {
+      // EDIT — never lock out legacy records: only block a bad format the user
+      // actually typed this session. Missing/legacy issues surface as a warning.
+      const firstTouchedInvalid = Object.entries(invalid).find(([k]) => touched[k]);
+      if (firstTouchedInvalid) return toast({ title: firstTouchedInvalid[1], variant: "destructive" });
     }
     setSaving(true);
     try {
+      const normPhone = normalizePhone(form?.phone);
       const payload = biz
-        ? { ...form, lastName: form?.lastName ?? "", badgeNumber: form?.badgeNumber ?? "", rank: null, actor: user?.name }
-        : { ...form, actor: user?.name };
+        ? { ...form, phone: normPhone, lastName: form?.lastName ?? "", badgeNumber: form?.badgeNumber ?? "", rank: null, actor: user?.name }
+        : { ...form, phone: normPhone, actor: user?.name };
       if (form?.id) await apiRequest("PATCH", `/api/officers/${form.id}`, payload);
       else await apiRequest("POST", "/api/officers", payload);
       queryClient.invalidateQueries({ queryKey: ["/api/officers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
       toast({ title: form?.id ? (biz ? "Business updated" : "Officer updated") : (biz ? "Business added" : "Officer added") });
-      setForm(null);
+      closeForm();
     } catch (e: any) {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
     } finally { setSaving(false); }
@@ -399,15 +453,26 @@ export default function Officers() {
       </Sheet>
 
       {/* Add/edit dialog */}
-      <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
+      <Dialog open={!!form} onOpenChange={(o) => !o && closeForm()}>
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{form?.id ? (isBiz(form) ? "Edit Business" : "Edit Officer") : (isBiz(form ?? { type: "person" }) ? "Add Business" : "Add Officer")}</DialogTitle>
             <DialogDescription>{isBiz(form ?? { type: "person" }) ? "Business/vendor you can issue equipment to (e.g. for maintenance)." : "Personnel profile including uniform and gear sizing."}</DialogDescription>
           </DialogHeader>
+          {form && (
+            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span><span className="text-destructive">*</span> required</span>
+            </div>
+          )}
+          {legacyIssues.length > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-chart-3/40 bg-chart-3/10 p-2.5 text-xs text-foreground" data-testid="text-legacy-warning">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-chart-3" />
+              <span>This record is missing or has outdated required info: {legacyIssues.join(", ")}. You can still save, but please complete it when possible.</span>
+            </div>
+          )}
           {form && isBiz(form) ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field className="sm:col-span-2" label="Business name"><Input value={form.firstName ?? ""} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-business-name" /></Field>
+              <Field className="sm:col-span-2" label="Business name" required error={errFor("firstName")}><Input value={form.firstName ?? ""} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-business-name" /></Field>
               <Field label="Contact person"><Input value={form.unit ?? ""} onChange={(e) => setForm({ ...form, unit: e.target.value })} data-testid="input-business-contact" /></Field>
               <Field label="Status">
                 <Select value={form.status ?? "active"} onValueChange={(v) => setForm({ ...form, status: v })}>
@@ -415,30 +480,30 @@ export default function Officers() {
                   <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
                 </Select>
               </Field>
-              <Field label="Email"><Input value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="input-business-email" /></Field>
-              <Field label="Phone"><Input value={form.phone ?? ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} data-testid="input-business-phone" /></Field>
+              <Field label="Email" error={errFor("email")}><Input value={form.email ?? ""} onChange={(e) => { markTouched("email"); setForm({ ...form, email: e.target.value }); }} data-testid="input-business-email" /></Field>
+              <Field label="Phone" error={errFor("phone")}><Input value={form.phone ?? ""} onChange={(e) => { markTouched("phone"); setForm({ ...form, phone: formatPhoneInput(e.target.value) }); }} data-testid="input-business-phone" /></Field>
               <Field className="sm:col-span-2" label="Address / notes"><Textarea rows={2} value={form.notes ?? ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} data-testid="input-business-notes" /></Field>
             </div>
           ) : form && (
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="Badge #"><Input value={form.badgeNumber ?? ""} onChange={(e) => setForm({ ...form, badgeNumber: e.target.value })} data-testid="input-badge" /></Field>
+              <Field label="Badge #" required error={errFor("badgeNumber")}><Input value={form.badgeNumber ?? ""} onChange={(e) => setForm({ ...form, badgeNumber: e.target.value })} data-testid="input-badge" /></Field>
               <Field label="Status">
                 <Select value={form.status ?? "active"} onValueChange={(v) => setForm({ ...form, status: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
                 </Select>
               </Field>
-              <Field label="First name"><Input value={form.firstName ?? ""} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-first" /></Field>
-              <Field label="Last name"><Input value={form.lastName ?? ""} onChange={(e) => setForm({ ...form, lastName: e.target.value })} data-testid="input-last" /></Field>
-              <Field label="Rank">
+              <Field label="First name" required error={errFor("firstName")}><Input value={form.firstName ?? ""} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-first" /></Field>
+              <Field label="Last name" required error={errFor("lastName")}><Input value={form.lastName ?? ""} onChange={(e) => setForm({ ...form, lastName: e.target.value })} data-testid="input-last" /></Field>
+              <Field label="Rank" required>
                 <Select value={form.rank ?? "Officer"} onValueChange={(v) => setForm({ ...form, rank: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{RANKS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
-              <Field label="Unit"><MultiSelect options={UNITS} value={parseUnits(form.unit)} onChange={(units) => setForm({ ...form, unit: joinUnits(units) })} placeholder="Select units…" testId="unit" /></Field>
-              <Field label="Email"><Input value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
-              <Field label="Phone"><Input value={form.phone ?? ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></Field>
+              <Field label="Unit" required error={errFor("unit")}><MultiSelect options={UNITS} value={parseUnits(form.unit)} onChange={(units) => setForm({ ...form, unit: joinUnits(units) })} placeholder="Select units…" testId="unit" /></Field>
+              <Field label="Email" required error={errFor("email")}><Input value={form.email ?? ""} onChange={(e) => { markTouched("email"); setForm({ ...form, email: e.target.value }); }} data-testid="input-email" /></Field>
+              <Field label="Phone" required error={errFor("phone")}><Input value={form.phone ?? ""} onChange={(e) => { markTouched("phone"); setForm({ ...form, phone: formatPhoneInput(e.target.value) }); }} data-testid="input-phone" /></Field>
               <Field label="Hire date"><Input type="date" value={(form.hireDate ?? "").slice(0, 10)} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} /></Field>
               <div className="sm:col-span-2 mt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sizing</div>
               <Field label="Shirt"><Input value={form.shirtSize ?? ""} onChange={(e) => setForm({ ...form, shirtSize: e.target.value })} /></Field>
@@ -452,7 +517,7 @@ export default function Officers() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForm(null)}>Cancel</Button>
+            <Button variant="outline" onClick={closeForm}>Cancel</Button>
             <Button onClick={save} disabled={saving} data-testid="button-save-officer">{saving ? "Saving…" : "Save"}</Button>
           </DialogFooter>
         </DialogContent>
@@ -535,8 +600,14 @@ const OFFICER_COLUMNS: ColumnSpec[] = [
   { header: "Notes", example: "" },
 ];
 
-function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
-  return <div className={className}><Label className="mb-1.5 block text-xs">{label}</Label>{children}</div>;
+function Field({ label, children, className, required, error }: { label: string; children: React.ReactNode; className?: string; required?: boolean; error?: string }) {
+  return (
+    <div className={className}>
+      <Label className="mb-1.5 block text-xs">{label}{required && <span className="text-destructive"> *</span>}</Label>
+      {children}
+      {error && <p className="mt-1 text-xs text-destructive" data-testid="text-field-error">{error}</p>}
+    </div>
+  );
 }
 
 // Per-assignment serial picker shown in the officer detail sheet. Lets an

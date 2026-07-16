@@ -8,6 +8,7 @@ import {
 } from "@shared/schema";
 import type { InsertItemVariant, InsertAssignment, Officer } from "@shared/schema";
 import type { IssueBatchPlan, KitIssuePlan, ReturnPlan } from "./storage";
+import { isValidEmail, isValidPhone, normalizePhone, isWholeNonNeg, isMoneyNonNeg } from "@shared/validation";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
@@ -24,6 +25,39 @@ export { hashPassword };
 
 const nowISO = () => new Date().toISOString();
 const stripPw = (u: any) => { if (!u) return u; const { password, ...rest } = u; return rest; };
+
+// Server-side enforcement of the USER-APPROVED #19 required set + formats. The
+// server is the authorization/validation boundary — the client rules mirror it.
+// Returns an error string on the first failure, or null when valid.
+function validateOfficerCreate(b: any): string | null {
+  const has = (v: unknown) => String(v ?? "").trim().length > 0;
+  const business = String(b?.type ?? "person") === "business";
+  if (business) {
+    if (!has(b.firstName)) return "Business name is required.";
+  } else {
+    if (!has(b.firstName)) return "First name is required.";
+    if (!has(b.lastName)) return "Last name is required.";
+    if (!has(b.badgeNumber)) return "Badge number is required.";
+    if (!has(b.unit)) return "Rank/unit is required.";
+    if (!has(b.email)) return "Email is required.";
+    if (!has(b.phone)) return "Phone is required.";
+  }
+  if (has(b.email) && !isValidEmail(b.email)) return "Enter a valid email address.";
+  if (has(b.phone) && !isValidPhone(b.phone)) return "Enter a 10-digit US phone number.";
+  return null;
+}
+
+function validateItemCreate(b: any): string | null {
+  const has = (v: unknown) => String(v ?? "").trim().length > 0;
+  if (!has(b.name)) return "Name is required.";
+  if (!has(b.category)) return "Category is required.";
+  if (!has(b.type)) return "Type is required.";
+  if (!has(b.location)) return "Location is required.";
+  if (b.type !== "sized" && b.quantity != null && !isWholeNonNeg(b.quantity)) return "Quantity must be a whole number ≥ 0.";
+  if (b.parLevel != null && b.parLevel !== "" && !isWholeNonNeg(b.parLevel)) return "PAR must be a whole number ≥ 0.";
+  if (b.unitCost != null && b.unitCost !== "" && !isMoneyNonNeg(b.unitCost)) return "Unit cost must be a dollar amount ≥ 0.";
+  return null;
+}
 
 /* ------------------- Brute-force protection --------------------- */
 // Throttle repeated authentication attempts. Keyed on client IP + the
@@ -296,7 +330,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.post("/api/officers", writeGuard, async (req, res) => {
     try {
+      const err = validateOfficerCreate(req.body);
+      if (err) return res.status(400).json({ message: err });
       const data = insertOfficerSchema.parse(req.body);
+      if (data.phone) data.phone = normalizePhone(data.phone);
       const o = await storage.createOfficer(data);
       await audit("create_officer", "officer", o.id,
         o.type === "business" ? `Added business "${o.firstName}"` : `Added officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})`,
@@ -325,6 +362,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.patch("/api/officers/:id", writeGuard, async (req, res) => {
     const { actor, ...patch } = req.body ?? {};
+    // EDIT is intentionally lenient so legacy records are never locked out: we
+    // normalize a phone to canonical form when it is a clean 10-digit number,
+    // but otherwise leave supplied values untouched (client enforces formats on
+    // fields the user actually edits). CREATE remains strict.
+    if (patch.phone != null && String(patch.phone).trim()) patch.phone = normalizePhone(patch.phone);
     const before = await storage.getOfficer(Number(req.params.id));
     const o = await storage.updateOfficer(Number(req.params.id), patch);
     if (!o) return res.status(404).json({ message: "Not found" });
@@ -384,6 +426,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.post("/api/items", writeGuard, async (req, res) => {
     try {
+      const err = validateItemCreate(req.body);
+      if (err) return res.status(400).json({ message: err });
       const data = insertItemSchema.parse(req.body);
       const i = await storage.createItem(data);
       await audit("create_item", "item", i.id, `Added item "${i.name}" (qty ${i.quantity})`, req.body.actor);
