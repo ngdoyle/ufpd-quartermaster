@@ -79,6 +79,12 @@ function diffDetail(before: Record<string, any> | undefined, after: Record<strin
   return parts.join(", ");
 }
 
+// Audit-friendly recipient label: businesses have no badge/last name.
+function recipientLabel(o: { type?: string | null; firstName: string; lastName?: string | null; badgeNumber?: string | null }): string {
+  if ((o.type ?? "person") === "business") return `"${o.firstName}"`;
+  return `${o.firstName} ${o.lastName ?? ""} (#${o.badgeNumber ?? ""})`;
+}
+
 type IssueLineInput = { itemId: number; quantity: number; itemUnitId?: number | null; itemVariantId?: number | null };
 type IssueOpts = { dueDate?: string | null; signature?: string; notes?: string; conditionOut?: string; issuedBy?: string; issuedLocation?: string };
 type PlanLineError = { index: number; message: string; code: number };
@@ -177,7 +183,7 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
     });
     const byPart = opts.issuedBy ? `, by ${opts.issuedBy}` : "";
     const locPart = opts.issuedLocation ? `, at ${opts.issuedLocation}` : "";
-    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix}${serialInfo} to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})${byPart}${locPart}`);
+    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix}${serialInfo} to ${recipientLabel(officer)}${byPart}${locPart}`);
   }
 
   if (errors.length) return { ok: false, errors };
@@ -886,7 +892,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const byPart = returnedBy ? `, by ${returnedBy}` : "";
       await audit("return", "assignment", a.id,
-        `Returned ${a.quantity}x "${item?.name}"${serialInfo} from ${officer?.firstName} ${officer?.lastName} (#${officer?.badgeNumber}) — condition in: ${condition}${byPart}`, returnedBy);
+        `Returned ${a.quantity}x "${item?.name}"${serialInfo} from ${officer ? recipientLabel(officer) : `#${a.officerId}`} — condition in: ${condition}${byPart}`, returnedBy);
       res.json({ ok: true });
     } catch (e) { handleErr(e, res); }
   });
