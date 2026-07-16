@@ -38,12 +38,17 @@ export default function EmailPage() {
   const [busy, setBusy] = useState<null | "overdue" | "lowstock">(null);
 
   // Only personnel/businesses with an email on file are valid recipients.
-  const recipients = useMemo(
-    () => (officers ?? []).filter((o) => isValidEmail(o.email))
-      .map((o) => ({ email: o.email!.trim(), label: o.type === "business" ? o.firstName : `${o.lastName}, ${o.firstName}` }))
-      .sort((a, b) => a.label.localeCompare(b.label)),
-    [officers],
-  );
+  // Dedupe by email so shared addresses produce a single option.
+  const recipients = useMemo(() => {
+    const byEmail = new Map<string, { email: string; label: string }>();
+    for (const o of officers ?? []) {
+      if (!isValidEmail(o.email)) continue;
+      const email = o.email!.trim();
+      if (byEmail.has(email)) continue;
+      byEmail.set(email, { email, label: o.type === "business" ? o.firstName : `${o.lastName}, ${o.firstName}` });
+    }
+    return Array.from(byEmail.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [officers]);
 
   const provider = config?.provider ?? "log";
 
