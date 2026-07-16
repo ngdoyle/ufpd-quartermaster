@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useApp, can } from "@/lib/app-context";
 import { PageHeader, Pill, StatusBadge, EmptyState } from "@/components/bits";
-import { fmtDate, relativeDays, exportCsv } from "@/lib/format";
+import { fmtDate, fmtDateTime, relativeDays, exportCsv } from "@/lib/format";
 import type { Officer, Item, Assignment, ItemUnit } from "@shared/schema";
 import { isDualSerialItem } from "@/components/serial-units-dialog";
+import { downloadIssueReceipt } from "@/lib/receipt";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -329,8 +330,18 @@ export default function Officers() {
                           <li key={a.id} className="px-3 py-2 text-sm">
                             <div className="flex items-center justify-between gap-2">
                               <span className="truncate">{a.quantity}× {itemName(a.itemId)}</span>
-                              {a.dueDate ? <Pill tone={overdue ? "red" : "gray"}>{relativeDays(a.dueDate)}</Pill> : <Pill tone="gray">no due date</Pill>}
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                {a.dueDate ? <Pill tone={overdue ? "red" : "gray"}>{relativeDays(a.dueDate)}</Pill> : <Pill tone="gray">no due date</Pill>}
+                                <ReprintReceiptButton assignment={a} item={it} officer={detail} />
+                              </div>
                             </div>
+                            {(a.issuedBy || a.issuedLocation) && (
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                {a.issuedBy ? `Issued by ${a.issuedBy}` : ""}
+                                {a.issuedBy && a.issuedLocation ? " · " : ""}
+                                {a.issuedLocation ? `at ${a.issuedLocation}` : ""}
+                              </p>
+                            )}
                             {it?.type === "unique" && (
                               <AssignmentUnitControl assignment={a} item={it} editable={editable} actor={user?.name} />
                             )}
@@ -531,5 +542,45 @@ function AssignmentUnitControl({ assignment, item, editable, actor }: { assignme
         </SelectContent>
       </Select>
     </div>
+  );
+}
+
+// Re-print the issue receipt for an active assignment from the officer profile
+// (#2). Fetches the serialized unit for unique items so the PDF shows serial(s).
+function ReprintReceiptButton({ assignment, item, officer }: { assignment: Assignment; item?: Item; officer: Officer }) {
+  const dual = item ? isDualSerialItem(item) : false;
+  const isUnique = item?.type === "unique";
+  const { data: units } = useQuery<ItemUnit[]>({ queryKey: ["/api/items", assignment.itemId, "units"], enabled: isUnique });
+  const u = (units ?? []).find((x) => x.id === assignment.itemUnitId);
+  const serials = u
+    ? (dual && u.secondarySerialNumber
+        ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}`
+        : u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber)
+    : null;
+
+  function reprint() {
+    downloadIssueReceipt({
+      timestamp: fmtDateTime(assignment.issuedAt),
+      officerName: `${officer.firstName} ${officer.lastName}`,
+      badgeNumber: officer.badgeNumber,
+      issuedBy: assignment.issuedBy ?? null,
+      issuedLocation: assignment.issuedLocation ?? null,
+      dueDate: assignment.dueDate ? fmtDate(assignment.dueDate) : null,
+      signature: assignment.signature ?? null,
+      lines: [{
+        itemName: item?.name ?? `Item #${assignment.itemId}`,
+        category: item?.category ?? null,
+        sizeOrVariant: (assignment as any).variantSize ?? null,
+        serials,
+        quantity: assignment.quantity,
+        condition: item?.condition ?? null,
+      }],
+    });
+  }
+
+  return (
+    <Button size="icon" variant="ghost" className="h-7 w-7" title="Re-print receipt" onClick={reprint} data-testid={`button-reprint-${assignment.id}`}>
+      <Download className="h-4 w-4" />
+    </Button>
   );
 }
