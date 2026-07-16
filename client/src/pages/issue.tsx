@@ -46,7 +46,7 @@ type CartLine = {
 
 // Kit → cart handoff. The Kits page stashes the chosen kit's lines here and
 // navigates to /issue, which drains it on mount (#13/#14).
-const KIT_CART_KEY = "qm_kit_cart";
+export const KIT_CART_KEY = "qm_kit_cart";
 export type KitCartPayload = { kitName: string; lines: { itemId: number; quantity: number }[] };
 
 export default function IssueReturn() {

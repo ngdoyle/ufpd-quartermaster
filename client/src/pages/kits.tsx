@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest, queryClient, errorMessage } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useApp, can } from "@/lib/app-context";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
-import type { Officer, Item, ItemUnit, ItemVariant } from "@shared/schema";
-import { isDualSerialItem } from "@/components/serial-units-dialog";
+import type { Officer, Item } from "@shared/schema";
+import { KIT_CART_KEY, type KitCartPayload } from "./issue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,22 +38,20 @@ export default function Kits() {
   const [saving, setSaving] = useState(false);
   const canManage = can.issueReturn(user?.role);
 
-  const [issueKit, setIssueKit] = useState<KitWithItems | null>(null);
-  const [issueOfficer, setIssueOfficer] = useState("");
-  const [unitSelections, setUnitSelections] = useState<Record<number, string>>({});
-  const [variantSelections, setVariantSelections] = useState<Record<number, string>>({});
-  const [issuing, setIssuing] = useState(false);
+  const [, navigate] = useLocation();
 
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
-  const itemById = (id: number) => items?.find((i) => i.id === id);
-  // Serialized (`unique`) items in the kit being issued — each needs a unit pick.
-  const serializedLines = (issueKit?.items ?? []).filter((l) => itemById(l.itemId)?.type === "unique");
-  const allSerialsChosen = serializedLines.every((l) => unitSelections[l.itemId]);
-  // Sized (`sized`) items in the kit — each offers a size pick. Unlike serials,
-  // a missing pick doesn't block the whole kit: the server skips only that line.
-  const sizedLines = (issueKit?.items ?? []).filter((l) => itemById(l.itemId)?.type === "sized");
 
-  function openIssue(k: KitWithItems) { setIssueKit(k); setIssueOfficer(""); setUnitSelections({}); setVariantSelections({}); }
+  // Load a kit's lines into the Issue-page cart and navigate there (#13/#14).
+  // Serial/size resolution and all-or-nothing validation happen in the cart.
+  function loadKitToCart(k: KitWithItems) {
+    const payload: KitCartPayload = {
+      kitName: k.name,
+      lines: k.items.map((l) => ({ itemId: l.itemId, quantity: l.quantity })),
+    };
+    sessionStorage.setItem(KIT_CART_KEY, JSON.stringify(payload));
+    navigate("/issue");
+  }
 
   function resetKitForm() { setName(""); setDesc(""); setLines([{ itemId: "", quantity: 1 }]); setEditingId(null); }
 
@@ -91,32 +90,6 @@ export default function Kits() {
     toast({ title: "Kit deleted" });
   }
 
-  async function doIssueKit() {
-    if (!issueKit || !issueOfficer) return toast({ title: "Select an officer", variant: "destructive" });
-    if (!allSerialsChosen) return toast({ title: "Select a serial for each serialized item", variant: "destructive" });
-    setIssuing(true);
-    try {
-      const selections: Record<number, number> = {};
-      for (const [k, v] of Object.entries(unitSelections)) selections[Number(k)] = Number(v);
-      const vSelections: Record<number, number> = {};
-      for (const [k, v] of Object.entries(variantSelections)) if (v) vSelections[Number(k)] = Number(v);
-      const res = await apiRequest("POST", `/api/kits/${issueKit.id}/issue`, {
-        officerId: Number(issueOfficer), issuedBy: user?.name, unitSelections: selections, variantSelections: vSelections,
-      });
-      const r = await res.json();
-      ["/api/assignments", "/api/items", "/api/dashboard"].forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
-      serializedLines.forEach((l) => queryClient.invalidateQueries({ queryKey: ["/api/items", l.itemId, "units"] }));
-      sizedLines.forEach((l) => queryClient.invalidateQueries({ queryKey: ["/api/items", l.itemId, "variants"] }));
-      toast({
-        title: `Kit issued — ${r.issued} items`,
-        description: r.skipped?.length ? `Skipped: ${r.skipped.join(", ")}` : undefined,
-      });
-      setIssueKit(null); setIssueOfficer(""); setUnitSelections({}); setVariantSelections({});
-    } catch (e: any) {
-      toast({ title: "Issue failed", description: errorMessage(e), variant: "destructive" });
-    } finally { setIssuing(false); }
-  }
-
   return (
     <div>
       <PageHeader title="Kit Templates" subtitle="Standard-issue equipment sets for fast onboarding"
@@ -153,7 +126,7 @@ export default function Kits() {
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {k.items.map((l) => <Pill key={l.id} tone="gray">{l.quantity}× {itemName(l.itemId)}</Pill>)}
               </div>
-              <Button className="mt-4" variant="outline" onClick={() => openIssue(k)} data-testid={`button-issue-kit-${k.id}`}>
+              <Button className="mt-4" variant="outline" onClick={() => loadKitToCart(k)} disabled={!canManage} data-testid={`button-issue-kit-${k.id}`}>
                 <Send className="mr-1.5 h-4 w-4" /> Issue to Officer
               </Button>
             </Card>
@@ -189,105 +162,6 @@ export default function Kits() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Issue kit dialog */}
-      <Dialog open={!!issueKit} onOpenChange={(o) => !o && setIssueKit(null)}>
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
-          <DialogHeader><DialogTitle>Issue "{issueKit?.name}"</DialogTitle><DialogDescription>All in-stock items in this kit will be issued to the selected officer. Serialized items require choosing a specific unit.</DialogDescription></DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>Officer</Label>
-              <Select value={issueOfficer} onValueChange={setIssueOfficer}>
-                <SelectTrigger data-testid="select-kit-officer"><SelectValue placeholder="Select officer…" /></SelectTrigger>
-                <SelectContent>{officers?.filter((o) => o.status === "active").map((o) => <SelectItem key={o.id} value={String(o.id)}>{o.lastName}, {o.firstName} · #{o.badgeNumber}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            {serializedLines.length > 0 && (
-              <div className="space-y-3 border-t border-border pt-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Serialized items — pick a unit</p>
-                {serializedLines.map((l) => {
-                  const item = itemById(l.itemId)!;
-                  return (
-                    <KitUnitPicker
-                      key={l.itemId}
-                      item={item}
-                      value={unitSelections[l.itemId] ?? ""}
-                      onChange={(v) => setUnitSelections((s) => ({ ...s, [l.itemId]: v }))}
-                    />
-                  );
-                })}
-              </div>
-            )}
-            {sizedLines.length > 0 && (
-              <div className="space-y-3 border-t border-border pt-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sized items — pick a size</p>
-                {sizedLines.map((l) => {
-                  const item = itemById(l.itemId)!;
-                  return (
-                    <KitVariantPicker
-                      key={l.itemId}
-                      item={item}
-                      value={variantSelections[l.itemId] ?? ""}
-                      onChange={(v) => setVariantSelections((s) => ({ ...s, [l.itemId]: v }))}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIssueKit(null)}>Cancel</Button>
-            <Button onClick={doIssueKit} disabled={issuing || !issueOfficer || !allSerialsChosen} data-testid="button-confirm-issue-kit">{issuing ? "Issuing…" : "Issue Kit"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-// Per-serialized-item unit picker for the kit issue flow. Lists the item's
-// in-stock units; if none are available it blocks with a clear warning so the
-// kit cannot be issued with a null serial.
-function KitUnitPicker({ item, value, onChange }: { item: Item; value: string; onChange: (v: string) => void }) {
-  const { data: units } = useQuery<ItemUnit[]>({ queryKey: ["/api/items", item.id, "units"] });
-  const inStock = (units ?? []).filter((u) => u.status === "in_stock");
-  const label = (u: ItemUnit) => (u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber);
-  return (
-    <div className="space-y-1.5">
-      <Label className="text-xs">{item.name}{isDualSerialItem(item) ? " (panel serials)" : ""}</Label>
-      {inStock.length === 0 ? (
-        <p className="rounded-md bg-destructive/10 p-2.5 text-xs text-destructive" data-testid={`text-kit-no-units-${item.id}`}>
-          No available {item.name} units in stock — add a unit or remove it from the kit.
-        </p>
-      ) : (
-        <Select value={value} onValueChange={onChange}>
-          <SelectTrigger data-testid={`select-kit-unit-${item.id}`}><SelectValue placeholder="Select serial…" /></SelectTrigger>
-          <SelectContent>{inStock.map((u) => <SelectItem key={u.id} value={String(u.id)}>{label(u)}</SelectItem>)}</SelectContent>
-        </Select>
-      )}
-    </div>
-  );
-}
-
-// Per-sized-item size picker for the kit issue flow. Lists the item's in-stock
-// sizes; if none have stock it warns, and leaving it unselected simply skips
-// that line server-side (the rest of the kit still issues).
-function KitVariantPicker({ item, value, onChange }: { item: Item; value: string; onChange: (v: string) => void }) {
-  const { data: variants } = useQuery<ItemVariant[]>({ queryKey: ["/api/items", item.id, "variants"] });
-  const inStock = (variants ?? []).filter((v) => v.quantity > 0);
-  return (
-    <div className="space-y-1.5">
-      <Label className="text-xs">{item.name}</Label>
-      {inStock.length === 0 ? (
-        <p className="rounded-md bg-destructive/10 p-2.5 text-xs text-destructive" data-testid={`text-kit-no-sizes-${item.id}`}>
-          No {item.name} sizes in stock — add stock or remove it from the kit.
-        </p>
-      ) : (
-        <Select value={value} onValueChange={onChange}>
-          <SelectTrigger data-testid={`select-kit-size-${item.id}`}><SelectValue placeholder="Select size…" /></SelectTrigger>
-          <SelectContent>{inStock.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.size} — {v.quantity} avail</SelectItem>)}</SelectContent>
-        </Select>
-      )}
     </div>
   );
 }
