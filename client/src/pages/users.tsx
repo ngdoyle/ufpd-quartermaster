@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useApp, roleLabel, Role } from "@/lib/app-context";
+import { useApp, roleLabel, Role, can } from "@/lib/app-context";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,10 +16,24 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, ShieldCheck, Trash2, Pencil } from "lucide-react";
+import { Plus, ShieldCheck, Trash2, Pencil, Check, Minus } from "lucide-react";
 
 const ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
 const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", supervisor: "purple", officer: "gray", auditor: "amber" };
+
+// Capability matrix — derived directly from the `can` guard functions (the same
+// source the server route guards mirror), so it can never drift from the truth.
+const CAP_ROLES: Role[] = ["admin", "quartermaster", "auditor"];
+const CAPABILITIES: { label: string; check: (r: Role) => boolean }[] = [
+  { label: "Manage users", check: (r) => can.manageUsers(r) },
+  { label: "Issue / return", check: (r) => can.issueReturn(r) },
+  { label: "Edit inventory", check: (r) => can.manageInventory(r) },
+  { label: "Edit personnel", check: (r) => can.manageOfficers(r) },
+  { label: "Reports", check: (r) => can.viewReports(r) },
+  { label: "Activity log", check: (r) => can.viewAudit(r) },
+  { label: "Compliance", check: (r) => can.viewCompliance(r) },
+  { label: "Email", check: (r) => can.email(r) },
+];
 
 export default function Users() {
   const { user } = useApp();
@@ -166,10 +180,40 @@ export default function Users() {
         </DialogContent>
       </Dialog>
 
-      <p className="mt-4 text-xs text-muted-foreground max-w-2xl">
-        Role permissions — <strong>Administrator</strong>: full access incl. accounts. <strong>Quartermaster</strong>: manage inventory, personnel, issue/return.
-        <strong> Supervisor</strong>: view reports & activity. <strong>Auditor</strong>: read-only with full activity log. <strong>Officer</strong>: self-service.
-      </p>
+      <Card className="mt-6 overflow-hidden" data-testid="card-capability-matrix">
+        <div className="border-b border-border px-4 py-3">
+          <h2 className="text-sm font-semibold">Role capabilities</h2>
+          <p className="text-xs text-muted-foreground">What each role can do. Officers have self-service access only and are omitted here.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                <th className="px-4 py-2 font-medium">Capability</th>
+                {CAP_ROLES.map((r) => (
+                  <th key={r} className="px-3 py-2 text-center font-medium">{roleLabel[r]}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {CAPABILITIES.map((cap) => (
+                <tr key={cap.label} className="border-b border-border last:border-0" data-testid={`row-cap-${cap.label.replace(/[^a-z]+/gi, "-").toLowerCase()}`}>
+                  <td className="px-4 py-2">{cap.label}</td>
+                  {CAP_ROLES.map((r) => (
+                    <td key={r} className="px-3 py-2 text-center">
+                      {cap.check(r) ? (
+                        <Check className="mx-auto h-4 w-4 text-green-600 dark:text-green-500" aria-label="yes" />
+                      ) : (
+                        <Minus className="mx-auto h-4 w-4 text-muted-foreground/40" aria-label="no" />
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }
