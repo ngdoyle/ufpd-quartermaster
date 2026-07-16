@@ -254,6 +254,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const pwChanged = !!patch.password;
     if (patch.password) patch.password = hashPassword(patch.password);
     const before = await storage.getUser(Number(req.params.id));
+    if (!before) return res.status(404).json({ message: "Not found" });
+    // Guard: don't allow the last remaining admin to be demoted or disabled.
+    const losesAdmin = before.role === "admin" && ((patch.role && patch.role !== "admin") || patch.active === false);
+    if (losesAdmin) {
+      const admins = (await storage.listUsers()).filter((x) => x.role === "admin" && x.active && x.id !== before.id);
+      if (admins.length === 0)
+        return res.status(400).json({ message: "Cannot demote or disable the last administrator." });
+    }
     const u = await storage.updateUser(Number(req.params.id), patch);
     if (!u) return res.status(404).json({ message: "Not found" });
     const diff = diffDetail(before, u, patch, ["password"]);
@@ -263,6 +271,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.delete("/api/users/:id", adminGuard, async (req, res) => {
     const before = await storage.getUser(Number(req.params.id));
+    if (before?.role === "admin") {
+      const admins = (await storage.listUsers()).filter((x) => x.role === "admin" && x.active && x.id !== before.id);
+      if (admins.length === 0)
+        return res.status(400).json({ message: "Cannot delete the last administrator." });
+    }
     await storage.deleteUser(Number(req.params.id));
     await audit("delete_user", "user", Number(req.params.id), `Deleted account ${before?.username ?? `#${req.params.id}`}`, req.query.actor as string);
     res.json({ ok: true });

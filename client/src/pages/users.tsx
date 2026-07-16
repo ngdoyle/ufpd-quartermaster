@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, ShieldCheck, Trash2 } from "lucide-react";
+import { Plus, ShieldCheck, Trash2, Pencil } from "lucide-react";
 
 const ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
 const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", supervisor: "purple", officer: "gray", auditor: "amber" };
@@ -28,6 +28,29 @@ export default function Users() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ username: "", name: "", role: "officer" as Role, password: "", mustChangePassword: true });
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({ username: "", name: "", role: "officer" as Role, password: "" });
+
+  function openEdit(u: any) {
+    setEditForm({ username: u.username, name: u.name, role: u.role as Role, password: "" });
+    setEditing(u);
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    if (!editForm.username || !editForm.name) return toast({ title: "Name and username required", variant: "destructive" });
+    setSaving(true);
+    try {
+      const patch: any = { username: editForm.username, name: editForm.name, role: editForm.role, actor: user?.name };
+      if (editForm.password) patch.password = editForm.password;
+      await apiRequest("PATCH", `/api/users/${editing.id}`, patch);
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: "Account updated" });
+      setEditing(null);
+    } catch (e: any) {
+      toast({ title: "Failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    } finally { setSaving(false); }
+  }
 
   async function save() {
     if (!form.username || !form.name || !form.password) return toast({ title: "All fields required", variant: "destructive" });
@@ -75,6 +98,7 @@ export default function Users() {
                 <div className="flex items-center gap-2">
                   <Pill tone={roleTone[u.role]}>{roleLabel[u.role as Role]}</Pill>
                   <Pill tone={u.active ? "green" : "gray"}>{u.active ? "Active" : "Disabled"}</Pill>
+                  <Button variant="outline" size="sm" onClick={() => openEdit(u)} data-testid={`button-edit-user-${u.id}`}><Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit</Button>
                   {u.id !== user?.id && (
                     <>
                       <Button variant="outline" size="sm" onClick={() => toggleActive(u)} data-testid={`button-toggle-${u.id}`}>{u.active ? "Disable" : "Enable"}</Button>
@@ -116,6 +140,28 @@ export default function Users() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreating(false)}>Cancel</Button>
             <Button onClick={save} disabled={saving} data-testid="button-save-user">{saving ? "Saving…" : "Create"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>Edit Account</DialogTitle><DialogDescription>Change username, role, or reset the password. Leave password blank to keep it unchanged.</DialogDescription></DialogHeader>
+          <div className="grid gap-3">
+            <div className="space-y-1.5"><Label>Full name</Label><Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} data-testid="input-edit-user-name" /></div>
+            <div className="space-y-1.5"><Label>Username</Label><Input value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} data-testid="input-edit-user-username" /></div>
+            <div className="space-y-1.5"><Label>New password <span className="text-muted-foreground">(optional)</span></Label><Input type="password" value={editForm.password} placeholder="Leave blank to keep current" onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} data-testid="input-edit-user-password" /></div>
+            <div className="space-y-1.5">
+              <Label>Role</Label>
+              <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v as Role })}>
+                <SelectTrigger data-testid="select-edit-role"><SelectValue /></SelectTrigger>
+                <SelectContent>{ROLES.map((r) => <SelectItem key={r} value={r}>{roleLabel[r]}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button onClick={saveEdit} disabled={saving} data-testid="button-save-edit-user">{saving ? "Saving…" : "Save"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

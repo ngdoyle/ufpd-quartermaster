@@ -35,6 +35,7 @@ export const officers = sqliteTable("officers", {
   email: text("email"),
   phone: text("phone"),
   status: text("status").notNull().default("active"), // active | inactive
+  type: text("type").notNull().default("person"), // person | business
   hireDate: text("hire_date"),
   // Uniform / gear sizing — first-class fields
   shirtSize: text("shirt_size"),

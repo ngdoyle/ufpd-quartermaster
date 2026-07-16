@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS officers (
   "email"       text,
   "phone"       text,
   "status"      text NOT NULL DEFAULT 'active',
+  "type"        text NOT NULL DEFAULT 'person',
   "hireDate"    text,
   "shirtSize"   text,
   "pantsSize"   text,
