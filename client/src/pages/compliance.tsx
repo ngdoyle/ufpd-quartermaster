@@ -33,10 +33,10 @@ const CONTROLS: Control[] = [
   { control: "Audit logging", detail: "Append-only Activity Log records every transaction with user, action, and timestamp.", status: "MET" },
   { control: "Security headers", detail: "Helmet sets HSTS, frame, content-type, and referrer protections.", status: "MET" },
   { control: "Role-based access control", detail: "Capability checks per role (Administrator, Quartermaster, Supervisor, Officer, Auditor).", status: "MET" },
-  { control: "Encryption at rest", detail: "SQLCipher / AES-256 on the database. Application layer complete; host-disk layer pending on RC hosting.", status: "PARTIAL" },
+  { control: "Encryption at rest", detail: "Supabase-managed Postgres with AES-256 encryption at rest (provider-managed). Moves to UF-managed hosting per the migration plan below.", status: "MET" },
   { control: "Single sign-on readiness", detail: "Pluggable auth layer with AUTH_MODE switch; GatorLink / Shibboleth drops in without code changes. Live SP registration remaining.", status: "PARTIAL" },
   { control: "Vulnerability scanning", detail: "0 production dependency vulnerabilities; 4 high advisories are dev-only (esbuild / vite / drizzle-kit). UF self-service scan pending.", status: "PARTIAL" },
-  { control: "TLS in transit", detail: "Provided at the platform layer once deployed to a *.rc.ufl.edu PubApps host.", status: "PENDING" },
+  { control: "TLS in transit", detail: "HTTPS enforced on the current published endpoint; equivalent TLS provided at the platform layer after migration to UF hosting.", status: "MET" },
 ];
 
 // Feature/change summary across the four polish batches (through Jul 16, 2026).
