@@ -74,6 +74,7 @@ export default function Inventory() {
   const [sizesFor, setSizesFor] = useState<InvItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [addExistingOpen, setAddExistingOpen] = useState(false);
 
   function openAdd() { setAttrs({}); setForm(blank()); }
   function openEdit(i: Item) { setAttrs(parseAttributes(i.attributes)); setForm(i); }
@@ -223,8 +224,13 @@ export default function Inventory() {
               </Button>
             )}
             {editable && (
+              <Button variant="outline" size="sm" onClick={() => setAddExistingOpen(true)} data-testid="button-add-existing">
+                <Layers className="mr-1.5 h-4 w-4" /> Add Existing
+              </Button>
+            )}
+            {editable && (
               <Button size="sm" onClick={openAdd} data-testid="button-add-item">
-                <Plus className="mr-1.5 h-4 w-4" /> Add Item
+                <Plus className="mr-1.5 h-4 w-4" /> Add New Item
               </Button>
             )}
           </>
@@ -501,7 +507,189 @@ export default function Inventory() {
           };
         }}
       />
+
+      {/* Add Existing stock intake */}
+      <AddExistingDialog
+        open={addExistingOpen}
+        onOpenChange={setAddExistingOpen}
+        items={items ?? []}
+        actor={user?.name}
+      />
     </div>
+  );
+}
+
+// "Add Existing" stock intake: pick an existing item, then add stock using the
+// intake form that matches its tracking mode (quantity / serials / sizes).
+function AddExistingDialog({ open, onOpenChange, items, actor }: {
+  open: boolean; onOpenChange: (o: boolean) => void; items: InvItem[]; actor?: string;
+}) {
+  const { toast } = useToast();
+  const [search, setSearch] = useState("");
+  const [selId, setSelId] = useState<number | null>(null);
+  const [qty, setQty] = useState("");
+  const [serialText, setSerialText] = useState("");
+  const [dualSerials, setDualSerials] = useState<{ fp: string; bp: string }[]>([{ fp: "", bp: "" }]);
+  const [sizeAdds, setSizeAdds] = useState<Record<string, string>>({});
+  const [newSize, setNewSize] = useState({ size: "", qty: "" });
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const selected = items.find((i) => i.id === selId) ?? null;
+  const isSerial = selected?.type === "unique";
+  const isSized = selected?.type === "sized";
+  const isDual = !!selected?.requiresDualSerial;
+
+  const { data: variants } = useQuery<{ id: number; size: string; quantity: number }[]>({
+    queryKey: [`/api/items/${selId}/variants`],
+    enabled: !!selId && isSized,
+  });
+
+  function reset() {
+    setSearch(""); setSelId(null); setQty(""); setSerialText("");
+    setDualSerials([{ fp: "", bp: "" }]); setSizeAdds({}); setNewSize({ size: "", qty: "" }); setNote("");
+  }
+
+  const matches = useMemo(() => {
+    const t = search.trim().toLowerCase();
+    return items
+      .filter((i) => !t || `${i.name} ${i.category}`.toLowerCase().includes(t))
+      .slice(0, 50);
+  }, [items, search]);
+
+  async function submit() {
+    if (!selected) return;
+    const body: any = { actor, note };
+    if (isSerial) {
+      if (isDual) {
+        const units = dualSerials
+          .map((d) => ({ serialNumber: d.fp.trim(), secondarySerialNumber: d.bp.trim() }))
+          .filter((d) => d.serialNumber || d.secondarySerialNumber);
+        if (units.length === 0) return toast({ title: "Enter at least one FP/BP serial pair", variant: "destructive" });
+        body.units = units;
+      } else {
+        const serials = serialText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        if (serials.length === 0) return toast({ title: "Enter at least one serial", variant: "destructive" });
+        const seen = new Set<string>();
+        for (const s of serials) { const k = s.toLowerCase(); if (seen.has(k)) return toast({ title: `Duplicate serial "${s}"`, variant: "destructive" }); seen.add(k); }
+        body.serials = serials;
+      }
+    } else if (isSized) {
+      const sizes: { size: string; addQuantity: number }[] = [];
+      for (const [size, v] of Object.entries(sizeAdds)) { const n = Number(v); if (n > 0) sizes.push({ size, addQuantity: n }); }
+      if (newSize.size.trim() && Number(newSize.qty) > 0) sizes.push({ size: newSize.size.trim(), addQuantity: Number(newSize.qty) });
+      if (sizes.length === 0) return toast({ title: "Enter a positive quantity for at least one size", variant: "destructive" });
+      body.sizes = sizes;
+    } else {
+      const n = Number(qty);
+      if (!Number.isInteger(n) || n <= 0) return toast({ title: "Quantity to add must be a positive integer", variant: "destructive" });
+      body.addQuantity = n;
+    }
+    setSaving(true);
+    try {
+      await apiRequest("POST", `/api/items/${selected.id}/restock`, body);
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/items/${selected.id}/units`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/items/${selected.id}/variants`] });
+      toast({ title: "Stock added" });
+      reset(); onOpenChange(false);
+    } catch (e: any) {
+      toast({ title: "Failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) reset(); onOpenChange(o); }}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add Existing Stock</DialogTitle>
+          <DialogDescription>Add stock to an item already in the catalog.</DialogDescription>
+        </DialogHeader>
+
+        {!selected ? (
+          <div className="space-y-2">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input className="pl-8" placeholder="Search items by name or category…" value={search}
+                onChange={(e) => setSearch(e.target.value)} data-testid="input-add-existing-search" autoFocus />
+            </div>
+            <div className="max-h-72 overflow-y-auto rounded-md border divide-y">
+              {matches.length === 0 ? <p className="p-3 text-sm text-muted-foreground">No matching items.</p> :
+                matches.map((i) => (
+                  <button key={i.id} type="button" onClick={() => setSelId(i.id)} data-testid={`add-existing-pick-${i.id}`}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted">
+                    <span className="min-w-0"><span className="font-medium">{i.name}</span> <span className="text-muted-foreground">· {i.category}</span></span>
+                    <TypeBadge type={i.type} />
+                  </button>
+                ))}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-md border px-3 py-2">
+              <div><p className="font-medium leading-tight">{selected.name}</p><p className="text-xs text-muted-foreground">{selected.category}</p></div>
+              <Button variant="ghost" size="sm" onClick={() => setSelId(null)} data-testid="button-add-existing-change">Change</Button>
+            </div>
+
+            {isSerial ? (
+              isDual ? (
+                <div className="space-y-2">
+                  <Label>Serials (FP / BP)</Label>
+                  {dualSerials.map((d, idx) => (
+                    <div key={idx} className="flex gap-2">
+                      <Input placeholder="FP serial" value={d.fp} data-testid={`input-add-existing-fp-${idx}`}
+                        onChange={(e) => setDualSerials((a) => a.map((x, i) => i === idx ? { ...x, fp: e.target.value } : x))} />
+                      <Input placeholder="BP serial" value={d.bp} data-testid={`input-add-existing-bp-${idx}`}
+                        onChange={(e) => setDualSerials((a) => a.map((x, i) => i === idx ? { ...x, bp: e.target.value } : x))} />
+                    </div>
+                  ))}
+                  <Button variant="outline" size="sm" onClick={() => setDualSerials((a) => [...a, { fp: "", bp: "" }])}>Add another pair</Button>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>Serial numbers <span className="text-muted-foreground">(one per line)</span></Label>
+                  <Textarea rows={5} value={serialText} placeholder={"SN-1001\nSN-1002"} onChange={(e) => setSerialText(e.target.value)} data-testid="textarea-add-existing-serials" />
+                </div>
+              )
+            ) : isSized ? (
+              <div className="space-y-2">
+                <Label>Add quantity per size</Label>
+                {(variants ?? []).map((v) => (
+                  <div key={v.id} className="flex items-center gap-2">
+                    <span className="w-20 text-sm">{v.size}</span>
+                    <span className="w-24 text-xs text-muted-foreground">on hand: {v.quantity}</span>
+                    <Input type="number" min={0} className="w-28" placeholder="+0" value={sizeAdds[v.size] ?? ""}
+                      data-testid={`input-add-existing-size-${v.size}`}
+                      onChange={(e) => setSizeAdds((s) => ({ ...s, [v.size]: e.target.value }))} />
+                  </div>
+                ))}
+                <div className="flex items-center gap-2 pt-1">
+                  <Input className="w-20" placeholder="New size" value={newSize.size} onChange={(e) => setNewSize({ ...newSize, size: e.target.value })} data-testid="input-add-existing-newsize" />
+                  <span className="w-24 text-xs text-muted-foreground">brand new</span>
+                  <Input type="number" min={0} className="w-28" placeholder="+0" value={newSize.qty} onChange={(e) => setNewSize({ ...newSize, qty: e.target.value })} data-testid="input-add-existing-newsize-qty" />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label>Quantity to add</Label>
+                <Input type="number" min={1} value={qty} onChange={(e) => setQty(e.target.value)} data-testid="input-add-existing-qty" />
+                {Number(qty) > 0 && <p className="text-xs text-muted-foreground">New total: {selected.quantity} → {selected.quantity + Math.floor(Number(qty))}</p>}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label>Note <span className="text-muted-foreground">(optional)</span></Label>
+              <Input value={note} placeholder="PO #, source, reason…" onChange={(e) => setNote(e.target.value)} data-testid="input-add-existing-note" />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => { reset(); onOpenChange(false); }}>Cancel</Button>
+          <Button onClick={submit} disabled={saving || !selected} data-testid="button-add-existing-submit">{saving ? "Saving…" : "Add Stock"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -646,6 +646,106 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  /* --------------------------- RESTOCK --------------------------- */
+  // "Add Existing" stock intake. Adds quantity / serials / sizes to an existing
+  // item atomically per submission, reusing the same quantity-sync paths as the
+  // units and variants routes. Produces a detailed `restock: …` audit entry.
+  app.post("/api/items/:id/restock", writeGuard, async (req, res) => {
+    try {
+      const itemId = Number(req.params.id);
+      const item = await storage.getItem(itemId);
+      if (!item) return res.status(404).json({ message: "Item not found." });
+      const { actor, note } = req.body ?? {};
+      const noteStr = note != null && String(note).trim() !== "" ? String(note).trim() : "";
+      const notePart = noteStr ? ` — note: ${noteStr}` : "";
+      let detail = "";
+
+      if (item.type === "unique") {
+        // Serialized intake: accept plain `serials: [...]` or structured
+        // `units: [{serialNumber, secondarySerialNumber}]` for dual-serial items.
+        const raw: { serialNumber: string; secondarySerialNumber?: string | null }[] =
+          Array.isArray(req.body?.units)
+            ? req.body.units.map((u: any) => ({ serialNumber: String(u?.serialNumber ?? "").trim(), secondarySerialNumber: u?.secondarySerialNumber != null ? String(u.secondarySerialNumber).trim() : null }))
+            : Array.isArray(req.body?.serials)
+              ? req.body.serials.map((s: any) => ({ serialNumber: String(s ?? "").trim(), secondarySerialNumber: null }))
+              : [];
+        const entries = raw.filter((u) => u.serialNumber !== "");
+        if (entries.length === 0) return res.status(400).json({ message: "Enter at least one serial number." });
+        // No duplicates within this submission (case-insensitive, across both panels).
+        const seen = new Set<string>();
+        for (const e of entries) {
+          for (const s of [e.serialNumber, e.secondarySerialNumber].filter((x): x is string => !!x)) {
+            const k = s.toLowerCase();
+            if (seen.has(k)) return res.status(400).json({ message: `Duplicate serial "${s}" in this submission.` });
+            seen.add(k);
+          }
+        }
+        // Reject serials that already exist for this item (case-insensitive).
+        const existing = await storage.listUnitsByItem(itemId);
+        const existingSet = new Set<string>();
+        for (const u of existing) {
+          if (u.serialNumber) existingSet.add(u.serialNumber.toLowerCase());
+          if (u.secondarySerialNumber) existingSet.add(u.secondarySerialNumber.toLowerCase());
+        }
+        for (const e of entries) {
+          for (const s of [e.serialNumber, e.secondarySerialNumber].filter((x): x is string => !!x)) {
+            if (existingSet.has(s.toLowerCase()))
+              return res.status(400).json({ message: `Serial "${s}" already exists for this item.` });
+          }
+        }
+        const labels: string[] = [];
+        for (const e of entries) {
+          if (item.requiresDualSerial && !e.secondarySerialNumber)
+            return res.status(400).json({ message: "Both FP (front panel) and BP (back panel) serials are required." });
+          await storage.createUnit({
+            itemId,
+            serialNumber: e.serialNumber,
+            secondarySerialNumber: e.secondarySerialNumber ?? null,
+            condition: "New",
+            location: item.location ?? "",
+            acquiredDate: "",
+            notes: "",
+          });
+          labels.push(item.requiresDualSerial && e.secondarySerialNumber ? `FP ${e.serialNumber} / BP ${e.secondarySerialNumber}` : e.serialNumber);
+        }
+        detail = `restock: added ${labels.length} serial${labels.length === 1 ? "" : "s"} (${labels.join(", ")})`;
+      } else if (item.type === "sized") {
+        // Per-size additions; create a brand-new size row when it doesn't exist.
+        const sizes: { size: string; addQuantity: number }[] = Array.isArray(req.body?.sizes)
+          ? req.body.sizes.map((s: any) => ({ size: String(s?.size ?? "").trim(), addQuantity: Math.floor(Number(s?.addQuantity) || 0) }))
+          : [];
+        const adds = sizes.filter((s) => s.size !== "" && s.addQuantity > 0);
+        if (adds.length === 0) return res.status(400).json({ message: "Enter a positive quantity for at least one size." });
+        const existing = await storage.listVariants(itemId);
+        const parts: string[] = [];
+        for (const a of adds) {
+          const match = existing.find((v) => v.size.trim().toLowerCase() === a.size.toLowerCase());
+          if (match) {
+            const before = match.quantity;
+            const after = before + a.addQuantity;
+            await storage.updateVariant(match.id, { quantity: after });
+            parts.push(`size ${match.size} ${before} → ${after} (+${a.addQuantity})`);
+          } else {
+            await storage.createVariant({ itemId, size: a.size, sku: null, quantity: a.addQuantity, parLevel: 0, notes: null });
+            parts.push(`size ${a.size} 0 → ${a.addQuantity} (+${a.addQuantity})`);
+          }
+        }
+        detail = `restock: ${parts.join(", ")}`;
+      } else {
+        // Quantity-tracked (consumable / returnable).
+        const add = Math.floor(Number(req.body?.addQuantity) || 0);
+        if (add <= 0) return res.status(400).json({ message: "Quantity to add must be a positive integer." });
+        const before = item.quantity;
+        const after = before + add;
+        await storage.updateItem(itemId, { quantity: after });
+        detail = `restock: quantity ${before} → ${after} (+${add})`;
+      }
+
+      await audit("restock_item", "item", itemId, `Restocked "${item.name}" — ${detail}${notePart}`, actor);
+      res.json(await storage.getItem(itemId));
+    } catch (e) { handleErr(e, res); }
+  });
+
   /* ----------------------- ASSIGNMENTS / I-R ---------------------- */
   app.get("/api/assignments", async (_req, res) => {
     const list = await storage.listAssignments();
