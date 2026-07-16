@@ -1142,6 +1142,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   /* ----------------------------- EMAIL --------------------------- */
   // All email routes are admin/quartermaster only. No provider secrets are ever
   // returned to the client — only the active provider name.
+  // Throttle email endpoints: sends can reach real mailboxes once a provider
+  // is configured, so cap send-type requests per client IP as an abuse
+  // backstop on top of the role/session guard. Read endpoints are untouched.
+  const emailSendLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    limit: 30, // max send-type requests per IP per window
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip ?? ""),
+    handler: (_req, res) => {
+      res.status(429).json({
+        message: "Too many email requests. Please wait a few minutes and try again.",
+      });
+    },
+  });
+
   app.get("/api/email/config", writeGuard, async (_req, res) => {
     res.json({ provider: activeProvider() });
   });
@@ -1153,7 +1169,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Compose + send. The recipient MUST be an email on file for a person or
   // business — free-typed addresses are rejected server-side (mirrors the UI).
-  app.post("/api/email/send", writeGuard, async (req, res) => {
+  app.post("/api/email/send", writeGuard, emailSendLimiter, async (req, res) => {
     try {
       const schema = z.object({ to: z.string(), subject: z.string().min(1), body: z.string().min(1), actor: z.string().optional() });
       const d = schema.parse(req.body);
@@ -1168,7 +1184,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Send one overdue-return reminder per officer who has overdue returnable
   // assignments and an email on file. Officers without email are skipped.
-  app.post("/api/email/overdue-reminders", writeGuard, async (req, res) => {
+  app.post("/api/email/overdue-reminders", writeGuard, emailSendLimiter, async (req, res) => {
     try {
       const actor = req.body?.actor as string | undefined;
       const active = await storage.listActiveAssignments();
@@ -1205,7 +1221,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Send a low-stock (at/below par) report to a chosen recipient who has an
   // email on file.
-  app.post("/api/email/low-stock", writeGuard, async (req, res) => {
+  app.post("/api/email/low-stock", writeGuard, emailSendLimiter, async (req, res) => {
     try {
       const schema = z.object({ to: z.string(), actor: z.string().optional() });
       const d = schema.parse(req.body);
