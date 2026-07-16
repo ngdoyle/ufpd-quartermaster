@@ -42,7 +42,7 @@ type InvItem = Item & { unitCounts?: UnitCounts; variantCounts?: VariantCounts; 
 const blank = (): Partial<Item> => ({
   name: "", category: "", subcategory: "", type: "consumable", sku: "", serialNumber: "", size: "", color: "",
   quantity: 0, parLevel: 0, location: "", unitCost: 0, vendor: "", grantNumber: "", expirationDate: "",
-  lastInspected: "", condition: "New", status: "in_stock", requiresInspection: false, returnBehavior: "returnable", attributes: "", notes: "",
+  lastInspected: "", condition: "New", status: "in_stock", requiresInspection: false, requiresDualSerial: false, returnBehavior: "returnable", attributes: "", notes: "",
 });
 
 // Legacy catalog-level serial fields duplicate the per-unit serial system
@@ -161,6 +161,8 @@ export default function Inventory() {
         quantity: Number(form.quantity) || 0,
         parLevel: Number(form.parLevel) || 0,
         unitCost: Number(form.unitCost) || 0,
+        // Dual serials only apply to serialized items — force off otherwise.
+        requiresDualSerial: form.type === "unique" ? !!form.requiresDualSerial : false,
         actor: user?.name,
       };
       if (form.id) await apiRequest("PATCH", `/api/items/${form.id}`, payload);
@@ -391,6 +393,12 @@ export default function Inventory() {
                 <Checkbox checked={!!form.requiresInspection} onCheckedChange={(v) => setForm({ ...form, requiresInspection: !!v })} data-testid="checkbox-inspection" />
                 Requires inspection before re-issue (holds in Maintenance on return)
               </label>
+              {form.type === "unique" && (
+                <label className="sm:col-span-2 flex items-center gap-2 text-sm">
+                  <Checkbox checked={!!form.requiresDualSerial} onCheckedChange={(v) => setForm({ ...form, requiresDualSerial: !!v })} data-testid="checkbox-dual-serial" />
+                  Requires dual serials (FP/BP) — for ballistic vests
+                </label>
+              )}
               <Field className="sm:col-span-2" label="Notes"><Textarea rows={2} value={form.notes ?? ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
             </div>
           )}

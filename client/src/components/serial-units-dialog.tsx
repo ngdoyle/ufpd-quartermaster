@@ -23,9 +23,11 @@ import { LOCATIONS } from "@/lib/constants";
 
 const CONDITIONS = ["New", "Good", "Fair", "Poor", "Damaged"];
 
-/** Ballistic vests carry two panel serials (front + back). */
-export const isDualSerialItem = (item: { category?: string | null }) =>
-  item.category === "Ballistic Vests";
+/** Dual-serial items (e.g. ballistic vests) carry two panel serials (FP/BP).
+ *  Driven by the per-item `requiresDualSerial` flag; falls back to the legacy
+ *  Ballistic Vests category so pre-flag data still renders both panels. */
+export const isDualSerialItem = (item: { category?: string | null; requiresDualSerial?: boolean | null }) =>
+  !!item.requiresDualSerial || item.category === "Ballistic Vests";
 
 type UnitForm = {
   id?: number;
