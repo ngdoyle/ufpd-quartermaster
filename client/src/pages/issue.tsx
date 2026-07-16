@@ -22,7 +22,9 @@ import {
   AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
 import { Input as In } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScannerDialog } from "@/components/scanner-dialog";
+import { isValidEmail } from "@shared/validation";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowUpRight, ArrowDownLeft, Search, PackageCheck, Plus, Trash2, ShoppingCart, ScanLine } from "lucide-react";
 
@@ -100,6 +102,8 @@ export default function IssueReturn() {
   const [pendingOfficer, setPendingOfficer] = useState<string | null>(null);
   // QR scan-to-cart dialog (#9)
   const [scanOpen, setScanOpen] = useState(false);
+  // Email issuance receipt to the officer (#18) — only when they have an email.
+  const [emailReceipt, setEmailReceipt] = useState(false);
 
   // return state
   const [returnFor, setReturnFor] = useState<Assignment | null>(null);
@@ -442,10 +446,12 @@ export default function IssueReturn() {
     if (lines.length === 0) return;
     setIssuing(true);
     try {
-      await apiRequest("POST", "/api/issue/batch", {
+      const wantsReceipt = emailReceipt && isValidEmail(selectedOfficer?.email);
+      const resp = await apiRequest("POST", "/api/issue/batch", {
         officerId: Number(officerId), signature, dueDate: dueDate || null,
         notes: notes || undefined, issuedBy: issuedBy || user?.name,
         issuedLocation: issuedLocation || undefined,
+        emailReceipt: wantsReceipt,
         lines: lines.map((l) => ({
           itemId: l.itemId, quantity: l.quantity,
           itemUnitId: l.itemUnitId ?? null, itemVariantId: l.itemVariantId ?? null,
@@ -482,8 +488,12 @@ export default function IssueReturn() {
           }),
         });
       }
-      toast({ title: `Issued ${n} item${n === 1 ? "" : "s"} to ${who}` });
-      setLines([]); setLineErrors({}); setSignature(""); setNotes(""); setDueDate("");
+      let receiptNote: string | undefined;
+      if (wantsReceipt) {
+        try { receiptNote = (await resp.clone().json())?.emailed ? "Receipt emailed to officer." : "Receipt recorded (log mode)."; } catch { /* ignore */ }
+      }
+      toast({ title: `Issued ${n} item${n === 1 ? "" : "s"} to ${who}`, description: receiptNote });
+      setLines([]); setLineErrors({}); setSignature(""); setNotes(""); setDueDate(""); setEmailReceipt(false);
       resetItemPickers();
     } catch (e: any) {
       const mapped = parseBatchError(e);
@@ -744,6 +754,16 @@ export default function IssueReturn() {
                 <Label>Notes (optional)</Label>
                 <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </div>
+              <label className={`flex items-center gap-2 text-sm ${selectedOfficer && !isValidEmail(selectedOfficer.email) ? "text-muted-foreground" : ""}`}>
+                <Checkbox
+                  checked={emailReceipt}
+                  disabled={!selectedOfficer || !isValidEmail(selectedOfficer.email)}
+                  onCheckedChange={(v) => setEmailReceipt(!!v)}
+                  data-testid="checkbox-email-receipt"
+                />
+                Email receipt to officer
+                {selectedOfficer && !isValidEmail(selectedOfficer.email) && <span className="text-xs">(no email on file)</span>}
+              </label>
               <Button className="w-full" onClick={issueCart} disabled={issuing || !cartValid} data-testid="button-issue-cart">
                 <PackageCheck className="mr-1.5 h-4 w-4" /> {issuing ? "Issuing…" : `Issue Cart (${lines.length} item${lines.length === 1 ? "" : "s"})`}
               </Button>

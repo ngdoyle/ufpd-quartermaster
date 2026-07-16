@@ -9,6 +9,7 @@ import {
 import type { InsertItemVariant, InsertAssignment, Officer } from "@shared/schema";
 import type { IssueBatchPlan, KitIssuePlan, ReturnPlan } from "./storage";
 import { isValidEmail, isValidPhone, normalizePhone, isWholeNonNeg, isMoneyNonNeg } from "@shared/validation";
+import { sendEmail, activeProvider } from "./email";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
@@ -859,6 +860,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         notes: z.string().optional(),
         issuedBy: z.string().optional(),
         issuedLocation: z.string().optional(),
+        emailReceipt: z.boolean().optional(),
         lines: z.array(z.object({
           itemId: z.number(),
           quantity: z.number().int().positive(),
@@ -878,7 +880,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const created = await storage.issueBatch(plan);
       for (let i = 0; i < created.length; i++)
         await audit("issue", "assignment", created[i].id, plan.auditDetails[i], d.issuedBy);
-      res.json({ issued: created.length, assignments: created });
+
+      // Optional issuance receipt email (#18) — only when requested and the
+      // officer has an email on file. Never blocks the issue on email failure.
+      let emailed = false;
+      if (d.emailReceipt && isValidEmail(officer.email)) {
+        try {
+          const lines = plan.auditDetails.map((s) => `  • ${s.replace(/ to .*$/, "")}`).join("\n");
+          const body = `Hello ${recipientLabel(officer)},\n\nThe following equipment has been issued to you${d.dueDate ? ` (due ${d.dueDate})` : ""}:\n\n${lines}\n\n${d.notes ? `Notes: ${d.notes}\n\n` : ""}Please retain this receipt for your records.\n\n— UFPD Quartermaster`;
+          const log = await sendEmail({
+            to: officer.email!, subject: `UFPD Quartermaster — Issuance receipt (${created.length} item${created.length === 1 ? "" : "s"})`,
+            body, template: "issue_receipt", relatedType: "officer", relatedId: officer.id,
+          });
+          emailed = log.status !== "failed";
+          await audit("email", "officer", officer.id, `Issuance receipt ${log.status} to ${officer.email} (${log.provider})`, d.issuedBy);
+        } catch { /* email is best-effort */ }
+      }
+      res.json({ issued: created.length, assignments: created, emailed });
     } catch (e) { handleErr(e, res); }
   });
 
@@ -1119,6 +1137,97 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/audit", async (req, res) => {
     const limit = req.query.limit ? Number(req.query.limit) : 200;
     res.json(await storage.listAudit(limit));
+  });
+
+  /* ----------------------------- EMAIL --------------------------- */
+  // All email routes are admin/quartermaster only. No provider secrets are ever
+  // returned to the client — only the active provider name.
+  app.get("/api/email/config", writeGuard, async (_req, res) => {
+    res.json({ provider: activeProvider() });
+  });
+
+  app.get("/api/email/log", writeGuard, async (req, res) => {
+    const limit = req.query.limit ? Number(req.query.limit) : 200;
+    res.json(await storage.listEmailLog(limit));
+  });
+
+  // Compose + send. The recipient MUST be an email on file for a person or
+  // business — free-typed addresses are rejected server-side (mirrors the UI).
+  app.post("/api/email/send", writeGuard, async (req, res) => {
+    try {
+      const schema = z.object({ to: z.string(), subject: z.string().min(1), body: z.string().min(1), actor: z.string().optional() });
+      const d = schema.parse(req.body);
+      const officers = await storage.listOfficers();
+      const match = officers.find((o) => isValidEmail(o.email) && o.email!.trim().toLowerCase() === d.to.trim().toLowerCase());
+      if (!match) return res.status(400).json({ message: "Recipient must be a person or business with an email on file." });
+      const log = await sendEmail({ to: match.email!, subject: d.subject, body: d.body, template: "manual", relatedType: "officer", relatedId: match.id });
+      await audit("email", "officer", match.id, `Email "${d.subject}" ${log.status} to ${match.email} (${log.provider})`, d.actor);
+      res.json(log);
+    } catch (e) { handleErr(e, res); }
+  });
+
+  // Send one overdue-return reminder per officer who has overdue returnable
+  // assignments and an email on file. Officers without email are skipped.
+  app.post("/api/email/overdue-reminders", writeGuard, async (req, res) => {
+    try {
+      const actor = req.body?.actor as string | undefined;
+      const active = await storage.listActiveAssignments();
+      const items = await storage.listItems();
+      const officers = await storage.listOfficers();
+      const itemById = new Map(items.map((i) => [i.id, i]));
+      const officerById = new Map(officers.map((o) => [o.id, o]));
+      const now = new Date();
+
+      // Group overdue returnable assignments by officer.
+      const byOfficer = new Map<number, string[]>();
+      for (const a of active) {
+        if (!a.dueDate || new Date(a.dueDate) >= now) continue;
+        const item = itemById.get(a.itemId);
+        if (item && item.type === "consumable") continue; // consumables aren't returned
+        const arr = byOfficer.get(a.officerId) ?? [];
+        arr.push(`  • ${a.quantity}× ${item?.name ?? `Item #${a.itemId}`} — due ${a.dueDate}`);
+        byOfficer.set(a.officerId, arr);
+      }
+
+      let sent = 0; const skipped: string[] = [];
+      for (const [officerId, lines] of Array.from(byOfficer)) {
+        const officer = officerById.get(officerId);
+        if (!officer) continue;
+        if (!isValidEmail(officer.email)) { skipped.push(recipientLabel(officer)); continue; }
+        const body = `Hello ${recipientLabel(officer)},\n\nOur records show the following equipment is past its return date:\n\n${lines.join("\n")}\n\nPlease return these items to the quartermaster as soon as possible.\n\n— UFPD Quartermaster`;
+        const log = await sendEmail({ to: officer.email!, subject: "UFPD Quartermaster — Overdue equipment reminder", body, template: "overdue_reminder", relatedType: "officer", relatedId: officer.id });
+        if (log.status !== "failed") sent++;
+        await audit("email", "officer", officer.id, `Overdue reminder ${log.status} to ${officer.email} (${log.provider})`, actor);
+      }
+      res.json({ sent, skipped, officersWithOverdue: byOfficer.size });
+    } catch (e) { handleErr(e, res); }
+  });
+
+  // Send a low-stock (at/below par) report to a chosen recipient who has an
+  // email on file.
+  app.post("/api/email/low-stock", writeGuard, async (req, res) => {
+    try {
+      const schema = z.object({ to: z.string(), actor: z.string().optional() });
+      const d = schema.parse(req.body);
+      const officers = await storage.listOfficers();
+      const recipient = officers.find((o) => isValidEmail(o.email) && o.email!.trim().toLowerCase() === d.to.trim().toLowerCase());
+      if (!recipient) return res.status(400).json({ message: "Recipient must be a person or business with an email on file." });
+
+      const items = await storage.listItems();
+      const unitCounts = await storage.unitStatusCountsByItem();
+      const variantCounts = await storage.variantCountsByItem();
+      const low = items
+        .map((i) => ({ i, ...computeStock(i, i.type === "unique" ? unitCounts[i.id] : undefined, i.type === "sized" ? variantCounts[i.id] : undefined) }))
+        .filter((x) => x.lowStock);
+
+      const lines = low.length
+        ? low.map((x) => `  • ${x.i.name} — ${x.onHand} on hand (par ${x.i.parLevel})`).join("\n")
+        : "  (No items are at or below their par level.)";
+      const body = `Low-stock report as of ${new Date().toLocaleString()}:\n\n${lines}\n\n— UFPD Quartermaster`;
+      const log = await sendEmail({ to: recipient.email!, subject: `UFPD Quartermaster — Low-stock report (${low.length} item${low.length === 1 ? "" : "s"})`, body, template: "low_stock", relatedType: "officer", relatedId: recipient.id });
+      await audit("email", "officer", recipient.id, `Low-stock report ${log.status} to ${recipient.email} (${log.provider})`, d.actor);
+      res.json({ ...log, count: low.length });
+    } catch (e) { handleErr(e, res); }
   });
 
   /* --------------------------- DASHBOARD -------------------------- */

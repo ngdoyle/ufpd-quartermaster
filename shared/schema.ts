@@ -262,3 +262,26 @@ export const auditLog = sqliteTable("audit_log", {
 export const insertAuditSchema = createInsertSchema(auditLog).omit({ id: true });
 export type InsertAudit = z.infer<typeof insertAuditSchema>;
 export type AuditEntry = typeof auditLog.$inferSelect;
+
+/* ------------------------------------------------------------------ */
+/* Email log — record of every outbound email (#18)                    */
+/* ------------------------------------------------------------------ */
+// status: logged (recorded, not delivered) | sent (delivered by provider) | failed
+// provider: log | resend | smtp
+export const emailLog = sqliteTable("email_log", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  recipient: text("recipient").notNull(),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  template: text("template"),
+  status: text("status").notNull().default("logged"),
+  provider: text("provider").notNull().default("log"),
+  error: text("error"),
+  relatedType: text("related_type"),
+  relatedId: integer("related_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertEmailLogSchema = createInsertSchema(emailLog).omit({ id: true });
+export type InsertEmailLog = z.infer<typeof insertEmailLogSchema>;
+export type EmailLogEntry = typeof emailLog.$inferSelect;

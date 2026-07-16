@@ -2,7 +2,7 @@ import type {
   User, InsertUser, Officer, InsertOfficer, Item, InsertItem,
   Assignment, InsertAssignment, Kit, InsertKit, KitItem, InsertKitItem,
   AuditEntry, InsertAudit, ItemUnit, InsertItemUnit, ItemVariant, InsertItemVariant,
-  VariantCounts,
+  VariantCounts, EmailLogEntry, InsertEmailLog,
 } from "@shared/schema";
 import { supabase, unwrap } from "./supabase";
 
@@ -32,6 +32,7 @@ const T = {
   kits: "kits",
   kitItems: "kit_items",
   auditLog: "audit_log",
+  emailLog: "email_log",
 } as const;
 
 export type UnitStatusCounts = {
@@ -134,6 +135,9 @@ export interface IStorage {
   // audit
   listAudit(limit?: number): Promise<AuditEntry[]>;
   addAudit(a: InsertAudit): Promise<AuditEntry>;
+  // email log
+  listEmailLog(limit?: number): Promise<EmailLogEntry[]>;
+  addEmailLog(e: InsertEmailLog): Promise<EmailLogEntry>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -335,6 +339,14 @@ export class DatabaseStorage implements IStorage {
   }
   async addAudit(a: InsertAudit) {
     return unwrap(await supabase.from(T.auditLog).insert(a).select().single()) as AuditEntry;
+  }
+
+  // ---- email log ----
+  async listEmailLog(limit = 200) {
+    return unwrap(await supabase.from(T.emailLog).select("*").order("createdAt", { ascending: false }).limit(limit)) as EmailLogEntry[];
+  }
+  async addEmailLog(e: InsertEmailLog) {
+    return unwrap(await supabase.from(T.emailLog).insert(e).select().single()) as EmailLogEntry;
   }
 }
 

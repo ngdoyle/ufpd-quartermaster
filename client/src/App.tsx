@@ -17,6 +17,7 @@ import Scan from "@/pages/scan";
 import Reports from "@/pages/reports";
 import Audit from "@/pages/audit";
 import Users from "@/pages/users";
+import Email from "@/pages/email";
 import Compliance from "@/pages/compliance";
 import NotFound from "@/pages/not-found";
 
@@ -30,6 +31,7 @@ const TITLES: Record<string, string> = {
   "/reports": "Reports",
   "/audit": "Audit Log",
   "/users": "Users",
+  "/email": "Email",
   "/compliance": "Compliance",
   "/change-password": "Change Password",
 };
@@ -49,6 +51,7 @@ function Shell() {
         <Route path="/reports" component={Reports} />
         <Route path="/audit" component={Audit} />
         <Route path="/users" component={Users} />
+        <Route path="/email" component={Email} />
         <Route path="/compliance" component={Compliance} />
         <Route path="/change-password" component={() => <ChangePassword />} />
         <Route component={NotFound} />
