@@ -2,18 +2,47 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import { fmtDate, fmtCurrency, relativeDays, daysUntil, exportCsv } from "@/lib/format";
-import type { Officer, Item, Assignment, ItemWithStock } from "@shared/schema";
+import type { Officer, Item, Assignment, ItemWithStock, ItemUnit } from "@shared/schema";
 import { variantLowStock } from "@shared/schema";
+import { apiRequest } from "@/lib/queryClient";
+import { isDualSerialItem } from "@/components/serial-units-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Download } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Download, MapPin, CalendarRange, ClipboardCheck, ShieldCheck, FileText, Table2, FileDown,
+} from "lucide-react";
+
+import { downloadByLocationPdf, exportByLocationCsv } from "@/lib/reports/by-location";
+import { downloadIssuancePdf, exportIssuanceCsv } from "@/lib/reports/issuance";
+import { downloadInspectionForm, type InspectionLine } from "@/lib/reports/inspection";
+import {
+  downloadQuarterlyTemplateA, downloadQuarterlyTemplateB, QUARTER_LABEL, type Quarter,
+} from "@/lib/reports/quarterly";
+import {
+  DATASETS, type Dataset, type CustomConfig, type DataBundle,
+  downloadCustomPdf, exportCustomCsv,
+} from "@/lib/reports/custom";
+import {
+  PRESETS, type PresetKey, resolveRange, type Range,
+} from "@/lib/reports/timeframe";
 
 export default function Reports() {
+  const { toast } = useToast();
   const { data: officers } = useQuery<Officer[]>({ queryKey: ["/api/officers"] });
   const { data: items } = useQuery<ItemWithStock[]>({ queryKey: ["/api/items"] });
   const { data: assignments } = useQuery<Assignment[]>({ queryKey: ["/api/assignments"] });
+
+  const ready = !!officers && !!items && !!assignments;
+  const bundle: DataBundle = { items: items ?? [], assignments: assignments ?? [], officers: officers ?? [] };
 
   const itemOf = (id: number) => items?.find((i) => i.id === id);
   const officerOf = (id: number) => officers?.find((o) => o.id === id);
@@ -21,24 +50,60 @@ export default function Reports() {
 
   const active = useMemo(() => (assignments ?? []).filter((a) => a.status === "active"), [assignments]);
 
-  const [issuedOfficerFilter, setIssuedOfficerFilter] = useState<string>("all");
-  // Officers that currently have something issued, sorted by name, for the picker.
+  // Officers that currently have something issued (for the inspection picker).
   const issuedOfficers = useMemo(() => {
     const ids = new Set(active.map((a) => a.officerId));
     return (officers ?? [])
       .filter((o) => ids.has(o.id))
       .sort((a, b) => (a.lastName + a.firstName).localeCompare(b.lastName + b.firstName));
   }, [officers, active]);
-  const issuedRows = useMemo(
-    () => (issuedOfficerFilter === "all" ? active : active.filter((a) => String(a.officerId) === issuedOfficerFilter)),
-    [active, issuedOfficerFilter],
-  );
-  const selectedOfficer = issuedOfficers.find((o) => String(o.id) === issuedOfficerFilter);
+
+  // Resolve the inspection form for one person: every active assignment becomes a
+  // line, with serial(s) fetched for serialized (unique) items.
+  async function generateInspection(officerId: number) {
+    const officer = officerOf(officerId);
+    if (!officer) return;
+    const rows = active.filter((a) => a.officerId === officerId);
+    // Fetch units once per distinct unique item so we can resolve serials.
+    const uniqueItemIds = Array.from(new Set(
+      rows.map((a) => a.itemId).filter((id) => itemOf(id)?.type === "unique"),
+    ));
+    const unitsByItem = new Map<number, ItemUnit[]>();
+    await Promise.all(uniqueItemIds.map(async (id) => {
+      try {
+        const res = await apiRequest("GET", `/api/items/${id}/units`);
+        unitsByItem.set(id, await res.json());
+      } catch { /* leave serials blank if the fetch fails */ }
+    }));
+
+    const lines: InspectionLine[] = rows.map((a) => {
+      const item = itemOf(a.itemId);
+      let serials: string | null = null;
+      if (item?.type === "unique" && a.itemUnitId) {
+        const u = (unitsByItem.get(a.itemId) ?? []).find((x) => x.id === a.itemUnitId);
+        if (u) {
+          const dual = isDualSerialItem(item);
+          serials = dual && u.secondarySerialNumber
+            ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}`
+            : u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber;
+        }
+      }
+      return {
+        itemName: item?.name ?? `Item #${a.itemId}`,
+        category: item?.category ?? null,
+        serials,
+        size: (a as any).variantSize ?? null,
+        quantity: a.quantity,
+      };
+    });
+    downloadInspectionForm(officer, lines);
+    toast({ title: "Inspection form generated", description: `${lines.length} line(s) for the selected personnel.` });
+  }
+
+  // ---- Operational tables (preserved) ----
   const overdue = active.filter((a) => a.dueDate && new Date(a.dueDate) < new Date());
   const expiring = (items ?? []).filter((i) => { const d = daysUntil(i.expirationDate); return d !== null && d <= 90; });
 
-  // Reorder list. Sized items track PAR per size, so they expand into one row
-  // per low size; every other type contributes a single item-level row.
   const reorderRows = useMemo(() => {
     const rows: { key: string; name: string; onHand: number; par: number; reorder: number; vendor: string }[] = [];
     for (const i of items ?? []) {
@@ -66,48 +131,58 @@ export default function Reports() {
 
   return (
     <div>
-      <PageHeader title="Reports" subtitle="Operational reports — export any view to CSV" />
-      <Tabs defaultValue="issued">
+      <PageHeader title="Reports" subtitle="Generate printable reports and export operational views" />
+
+      {/* Pre-built report cards */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <ReportCard icon={MapPin} title="Inventory by Location"
+          desc="All items grouped by storage location with per-location subtotals and est. value.">
+          <Button size="sm" variant="outline" disabled={!ready} onClick={() => downloadByLocationPdf(bundle.items)} data-testid="button-byloc-pdf">
+            <FileText className="mr-1.5 h-4 w-4" /> PDF
+          </Button>
+          <Button size="sm" variant="outline" disabled={!ready} onClick={() => exportByLocationCsv(bundle.items)} data-testid="button-byloc-csv">
+            <Table2 className="mr-1.5 h-4 w-4" /> CSV
+          </Button>
+        </ReportCard>
+
+        <ReportCard icon={CalendarRange} title="Issuance & Activity"
+          desc="What was issued in a chosen time frame, to whom and by whom.">
+          <IssuanceDialog bundle={bundle} ready={ready} />
+        </ReportCard>
+
+        <ReportCard icon={ClipboardCheck} title="Agency Inspection Form"
+          desc="One person's currently issued equipment with serials and sign-off blocks.">
+          <InspectionDialog officers={issuedOfficers} ready={ready} onGenerate={generateInspection} />
+        </ReportCard>
+
+        <ReportCard icon={ShieldCheck} title="Quarterly Inspection Checklist"
+          desc="Critical Incident Equipment Inspection (armory) — Template A.">
+          <QuarterlyDialog title="Quarterly Inspection Checklist" ready={ready}
+            onGenerate={(q, y, id) => downloadQuarterlyTemplateA(bundle.items, q, y, id ?? "")} withInspId />
+        </ReportCard>
+
+        <ReportCard icon={ShieldCheck} title="Operational Readiness"
+          desc="Training Division operational readiness report — Template B.">
+          <QuarterlyDialog title="Operational Readiness" ready={ready}
+            onGenerate={(q, y) => downloadQuarterlyTemplateB(bundle.items, q, y)} />
+        </ReportCard>
+
+        <ReportCard icon={FileDown} title="Custom Report Generator"
+          desc="Pick a dataset, columns, filters and grouping; export PDF or CSV.">
+          <CustomGenerator bundle={bundle} ready={ready} />
+        </ReportCard>
+      </div>
+
+      {/* Operational tables (quick on-screen views) */}
+      <h2 className="mt-8 mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">Operational Tables</h2>
+      <Tabs defaultValue="overdue">
         <TabsList className="flex-wrap h-auto">
-          <TabsTrigger value="issued">Issued to Officer</TabsTrigger>
           <TabsTrigger value="overdue">Overdue ({overdue.length})</TabsTrigger>
           <TabsTrigger value="reorder">Reorder ({reorderRows.length})</TabsTrigger>
           <TabsTrigger value="expiring">Expiring ({expiring.length})</TabsTrigger>
           <TabsTrigger value="totals">Inventory Totals</TabsTrigger>
         </TabsList>
 
-        {/* Issued */}
-        <TabsContent value="issued" className="mt-4">
-          <div className="mb-3 flex flex-col gap-1.5 sm:max-w-xs">
-            <label className="text-xs font-medium text-muted-foreground" htmlFor="select-issued-officer">Officer</label>
-            <Select value={issuedOfficerFilter} onValueChange={setIssuedOfficerFilter}>
-              <SelectTrigger id="select-issued-officer" data-testid="select-issued-officer">
-                <SelectValue placeholder="Select an officer" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all" data-testid="option-issued-all">All officers</SelectItem>
-                {issuedOfficers.map((o) => (
-                  <SelectItem key={o.id} value={String(o.id)} data-testid={`option-issued-${o.id}`}>
-                    {(o.type ?? "person") === "business" ? `${o.firstName} (Business)` : `${o.lastName}, ${o.firstName} (#${o.badgeNumber})`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <ReportShell
-            title={selectedOfficer ? `Issued to ${(selectedOfficer.type ?? "person") === "business" ? selectedOfficer.firstName : `${selectedOfficer.firstName} ${selectedOfficer.lastName}`}` : "Currently Issued Equipment"}
-            onExport={() => exportCsv(selectedOfficer ? `issued_${selectedOfficer.lastName}.csv` : "issued.csv", issuedRows.map((a) => ({
-              Officer: oName(a.officerId), Item: itemOf(a.itemId)?.name, Qty: a.quantity, Issued: fmtDate(a.issuedAt), Due: fmtDate(a.dueDate), Condition: a.conditionOut,
-            })))}>
-            {issuedRows.length === 0 ? <EmptyState title={selectedOfficer ? "Nothing issued to this officer" : "Nothing issued"} /> : (
-              <SimpleTable head={["Officer", "Item", "Qty", "Issued", "Due"]}
-                rows={issuedRows.map((a) => [oName(a.officerId), itemOf(a.itemId)?.name ?? "—", String(a.quantity), fmtDate(a.issuedAt),
-                  a.dueDate ? <Pill tone={new Date(a.dueDate) < new Date() ? "red" : "gray"}>{relativeDays(a.dueDate)}</Pill> : "—"])} />
-            )}
-          </ReportShell>
-        </TabsContent>
-
-        {/* Overdue */}
         <TabsContent value="overdue" className="mt-4">
           <ReportShell title="Overdue Returns" onExport={() => exportCsv("overdue.csv", overdue.map((a) => ({
             Officer: oName(a.officerId), Item: itemOf(a.itemId)?.name, Due: fmtDate(a.dueDate), Status: relativeDays(a.dueDate),
@@ -119,7 +194,6 @@ export default function Reports() {
           </ReportShell>
         </TabsContent>
 
-        {/* Reorder */}
         <TabsContent value="reorder" className="mt-4">
           <ReportShell title="Reorder List (at/below PAR)" onExport={() => exportCsv("reorder.csv", reorderRows.map((r) => ({
             Item: r.name, OnHand: r.onHand, PAR: r.par, Suggested: r.reorder, Vendor: r.vendor,
@@ -131,7 +205,6 @@ export default function Reports() {
           </ReportShell>
         </TabsContent>
 
-        {/* Expiring */}
         <TabsContent value="expiring" className="mt-4">
           <ReportShell title="Expiring & Expired Items" onExport={() => exportCsv("expiring.csv", expiring.map((i) => ({
             Item: i.name, Serial: i.serialNumber, Expiration: fmtDate(i.expirationDate), Days: daysUntil(i.expirationDate),
@@ -145,7 +218,6 @@ export default function Reports() {
           </ReportShell>
         </TabsContent>
 
-        {/* Totals */}
         <TabsContent value="totals" className="mt-4">
           <ReportShell title="Inventory Totals by Category" onExport={() => exportCsv("inventory_totals.csv", byCategory.map(([cat, e]) => ({
             Category: cat, Items: e.count, TotalQty: e.qty, Value: e.value.toFixed(2),
@@ -162,6 +234,337 @@ export default function Reports() {
     </div>
   );
 }
+
+/* ------------------------------- Report card ------------------------------ */
+
+function ReportCard({ icon: Icon, title, desc, children }: {
+  icon: React.ComponentType<{ className?: string }>; title: string; desc: string; children: React.ReactNode;
+}) {
+  return (
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex items-start gap-3">
+        <div className="rounded-md bg-muted p-2"><Icon className="h-5 w-5 text-foreground" /></div>
+        <div>
+          <h3 className="text-sm font-semibold leading-tight">{title}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{desc}</p>
+        </div>
+      </div>
+      <div className="mt-auto flex flex-wrap gap-2">{children}</div>
+    </Card>
+  );
+}
+
+/* ------------------------------ Time-frame UI ----------------------------- */
+
+function TimeframePicker({ preset, setPreset, start, setStart, end, setEnd }: {
+  preset: PresetKey; setPreset: (p: PresetKey) => void;
+  start: string; setStart: (s: string) => void;
+  end: string; setEnd: (s: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1.5">
+        <Label>Time frame</Label>
+        <Select value={preset} onValueChange={(v) => setPreset(v as PresetKey)}>
+          <SelectTrigger data-testid="select-timeframe"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {PRESETS.map((p) => <SelectItem key={p.key} value={p.key}>{p.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      {preset === "custom" && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="tf-start">Start</Label>
+            <Input id="tf-start" type="date" value={start} onChange={(e) => setStart(e.target.value)} data-testid="input-tf-start" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="tf-end">End</Label>
+            <Input id="tf-end" type="date" value={end} onChange={(e) => setEnd(e.target.value)} data-testid="input-tf-end" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------- Issuance -------------------------------- */
+
+function IssuanceDialog({ bundle, ready }: { bundle: DataBundle; ready: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [preset, setPreset] = useState<PresetKey>("30d");
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const range: Range = resolveRange(preset, start, end);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={!ready} data-testid="button-issuance-open"><CalendarRange className="mr-1.5 h-4 w-4" /> Configure</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Issuance & Activity Report</DialogTitle>
+          <DialogDescription>Assignments issued in the selected time frame.</DialogDescription>
+        </DialogHeader>
+        <TimeframePicker preset={preset} setPreset={setPreset} start={start} setStart={setStart} end={end} setEnd={setEnd} />
+        <DialogFooter>
+          <Button variant="outline" onClick={() => exportIssuanceCsv(bundle.assignments, bundle.items, bundle.officers, range)} data-testid="button-issuance-csv">
+            <Table2 className="mr-1.5 h-4 w-4" /> CSV
+          </Button>
+          <Button onClick={() => downloadIssuancePdf(bundle.assignments, bundle.items, bundle.officers, preset, range)} data-testid="button-issuance-pdf">
+            <FileText className="mr-1.5 h-4 w-4" /> PDF
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------ Inspection ------------------------------- */
+
+function InspectionDialog({ officers, ready, onGenerate }: {
+  officers: Officer[]; ready: boolean; onGenerate: (officerId: number) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [sel, setSel] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+
+  async function go() {
+    if (!sel) return;
+    setBusy(true);
+    try { await onGenerate(Number(sel)); setOpen(false); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={!ready} data-testid="button-inspection-open"><ClipboardCheck className="mr-1.5 h-4 w-4" /> Select personnel</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Agency Equipment Inspection Form</DialogTitle>
+          <DialogDescription>Generates a printable form of all equipment currently issued to one person.</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <Label>Personnel</Label>
+          <Select value={sel} onValueChange={setSel}>
+            <SelectTrigger data-testid="select-inspection-officer"><SelectValue placeholder="Select personnel with issued equipment" /></SelectTrigger>
+            <SelectContent>
+              {officers.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground">No personnel currently hold equipment</div>}
+              {officers.map((o) => (
+                <SelectItem key={o.id} value={String(o.id)} data-testid={`option-inspection-${o.id}`}>
+                  {(o.type ?? "person") === "business" ? `${o.firstName} (Business)` : `${o.lastName}, ${o.firstName} (#${o.badgeNumber})`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <DialogFooter>
+          <Button onClick={go} disabled={!sel || busy} data-testid="button-inspection-generate">
+            <FileText className="mr-1.5 h-4 w-4" /> {busy ? "Generating…" : "Generate PDF"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------- Quarterly ------------------------------- */
+
+function QuarterlyDialog({ title, ready, onGenerate, withInspId }: {
+  title: string; ready: boolean;
+  onGenerate: (quarter: Quarter, year: number, inspId?: string) => void; withInspId?: boolean;
+}) {
+  const now = new Date();
+  const [open, setOpen] = useState(false);
+  const [quarter, setQuarter] = useState<Quarter>((Math.floor(now.getMonth() / 3) + 1) as Quarter);
+  const [year, setYear] = useState<number>(now.getFullYear());
+  const [inspId, setInspId] = useState("");
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={!ready} data-testid="button-quarterly-open"><FileText className="mr-1.5 h-4 w-4" /> Configure</Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>Quantities auto-fill from live inventory; unmatched rows print blank for handwriting.</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>Quarter</Label>
+              <Select value={String(quarter)} onValueChange={(v) => setQuarter(Number(v) as Quarter)}>
+                <SelectTrigger data-testid="select-quarter"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {([1, 2, 3, 4] as Quarter[]).map((q) => <SelectItem key={q} value={String(q)}>{QUARTER_LABEL[q]}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="q-year">Year</Label>
+              <Input id="q-year" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} data-testid="input-year" />
+            </div>
+          </div>
+          {withInspId && (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="q-inspid">Inspector ID (optional)</Label>
+              <Input id="q-inspid" value={inspId} onChange={(e) => setInspId(e.target.value)} placeholder="Leave blank for handwriting" data-testid="input-inspid" />
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button onClick={() => { onGenerate(quarter, year, inspId); setOpen(false); }} data-testid="button-quarterly-generate">
+            <FileText className="mr-1.5 h-4 w-4" /> Generate PDF
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* --------------------------- Custom generator ---------------------------- */
+
+function CustomGenerator({ bundle, ready }: { bundle: DataBundle; ready: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [dataset, setDataset] = useState<Dataset>("inventory");
+  const [cols, setCols] = useState<string[]>([]);
+  const [category, setCategory] = useState("all");
+  const [location, setLocation] = useState("all");
+  const [status, setStatus] = useState("all");
+  const [officerId, setOfficerId] = useState("all");
+  const [groupBy, setGroupBy] = useState<string>("none");
+  const [preset, setPreset] = useState<PresetKey>("all");
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [title, setTitle] = useState("");
+
+  const ds = DATASETS[dataset];
+  const available = ds.columns;
+  const selected = cols.length ? cols : available.map((c) => c.key);
+
+  const categories = useMemo(() => Array.from(new Set(bundle.items.map((i) => i.category))).sort(), [bundle.items]);
+  const locations = useMemo(() => Array.from(new Set(bundle.items.map((i) => i.location ?? "").filter(Boolean))).sort(), [bundle.items]);
+  const statuses = dataset === "inventory"
+    ? ["active", "low", "out", "expiring", "expired", "maintenance", "retired"]
+    : ["active", "returned"];
+
+  function toggleCol(key: string) {
+    const base = cols.length ? cols : available.map((c) => c.key);
+    setCols(base.includes(key) ? base.filter((k) => k !== key) : [...base, key]);
+  }
+  function switchDataset(d: Dataset) { setDataset(d); setCols([]); setGroupBy("none"); setStatus("all"); }
+
+  const config: CustomConfig = {
+    dataset, columns: selected,
+    filters: { category, location, status, officerId },
+    preset, range: resolveRange(preset, start, end),
+    groupBy: groupBy === "none" ? undefined : groupBy,
+    title: title || ds.label,
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" disabled={!ready} data-testid="button-custom-open"><FileDown className="mr-1.5 h-4 w-4" /> Open generator</Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Custom Report Generator</DialogTitle>
+          <DialogDescription>Choose a dataset, columns, filters and grouping, then export.</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="cr-title">Report title</Label>
+            <Input id="cr-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={ds.label} data-testid="input-custom-title" />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Dataset</Label>
+            <Select value={dataset} onValueChange={(v) => switchDataset(v as Dataset)}>
+              <SelectTrigger data-testid="select-dataset"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {(Object.keys(DATASETS) as Dataset[]).map((k) => <SelectItem key={k} value={k}>{DATASETS[k].label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{ds.hint}</p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Columns</Label>
+            <div className="grid grid-cols-2 gap-1.5">
+              {available.map((c) => (
+                <label key={c.key} className="flex items-center gap-2 text-sm">
+                  <Checkbox checked={selected.includes(c.key)} onCheckedChange={() => toggleCol(c.key)} data-testid={`check-col-${c.key}`} />
+                  {c.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <FilterField label="Category" value={category} setValue={setCategory} options={categories} />
+            <FilterField label="Location" value={location} setValue={setLocation} options={locations} />
+            <FilterField label="Status" value={status} setValue={setStatus} options={statuses} />
+            {dataset !== "inventory" && (
+              <FilterField label="Personnel" value={officerId} setValue={setOfficerId}
+                options={bundle.officers.map((o) => ({ value: String(o.id), label: (o.type ?? "person") === "business" ? o.firstName : `${o.lastName}, ${o.firstName}` }))} />
+            )}
+          </div>
+
+          {ds.dated && (
+            <TimeframePicker preset={preset} setPreset={setPreset} start={start} setStart={setStart} end={end} setEnd={setEnd} />
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Group by</Label>
+            <Select value={groupBy} onValueChange={setGroupBy}>
+              <SelectTrigger data-testid="select-groupby"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No grouping</SelectItem>
+                {available.filter((c) => selected.includes(c.key)).map((c) => <SelectItem key={c.key} value={c.key}>{c.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => exportCustomCsv(config, bundle)} data-testid="button-custom-csv">
+            <Table2 className="mr-1.5 h-4 w-4" /> CSV
+          </Button>
+          <Button onClick={() => downloadCustomPdf(config, bundle)} data-testid="button-custom-pdf">
+            <FileText className="mr-1.5 h-4 w-4" /> PDF
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function FilterField({ label, value, setValue, options }: {
+  label: string; value: string; setValue: (v: string) => void;
+  options: string[] | { value: string; label: string }[];
+}) {
+  const opts = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{label}</Label>
+      <Select value={value} onValueChange={setValue}>
+        <SelectTrigger data-testid={`select-filter-${label.toLowerCase()}`}><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All</SelectItem>
+          {opts.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+/* ------------------------------ Shared bits ------------------------------ */
 
 function ReportShell({ title, onExport, children }: { title: string; onExport: () => void; children: React.ReactNode }) {
   return (
