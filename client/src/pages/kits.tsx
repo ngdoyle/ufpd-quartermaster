@@ -5,7 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useApp, can } from "@/lib/app-context";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import type { Officer, Item } from "@shared/schema";
-import { KIT_CART_KEY, type KitCartPayload } from "./issue";
+import { setKitCart, type KitCartPayload } from "./issue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -49,7 +49,7 @@ export default function Kits() {
       kitName: k.name,
       lines: k.items.map((l) => ({ itemId: l.itemId, quantity: l.quantity })),
     };
-    sessionStorage.setItem(KIT_CART_KEY, JSON.stringify(payload));
+    setKitCart(payload);
     navigate("/issue");
   }
 

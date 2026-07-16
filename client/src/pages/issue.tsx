@@ -46,8 +46,17 @@ type CartLine = {
 
 // Kit → cart handoff. The Kits page stashes the chosen kit's lines here and
 // navigates to /issue, which drains it on mount (#13/#14).
-export const KIT_CART_KEY = "qm_kit_cart";
 export type KitCartPayload = { kitName: string; lines: { itemId: number; quantity: number }[] };
+// In-memory kit→cart handoff. SPA navigation (wouter) never reloads the page, so a
+// module variable is sufficient — and unlike sessionStorage it can't throw inside
+// the sandboxed preview iframe.
+let kitCartHandoff: KitCartPayload | null = null;
+export function setKitCart(p: KitCartPayload) { kitCartHandoff = p; }
+export function takeKitCart(): KitCartPayload | null {
+  const p = kitCartHandoff;
+  kitCartHandoff = null;
+  return p;
+}
 
 export default function IssueReturn() {
   const { user } = useApp();
@@ -187,11 +196,9 @@ export default function IssueReturn() {
   // Waits for items to load so line metadata (name/category/type) is available.
   useEffect(() => {
     if (!items) return;
-    const raw = sessionStorage.getItem(KIT_CART_KEY);
-    if (!raw) return;
-    sessionStorage.removeItem(KIT_CART_KEY);
+    const payload = takeKitCart();
+    if (!payload) return;
     try {
-      const payload = JSON.parse(raw) as KitCartPayload;
       const newLines: CartLine[] = [];
       for (const kl of payload.lines) {
         const item = items.find((i) => i.id === kl.itemId);
