@@ -292,7 +292,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const data = insertOfficerSchema.parse(req.body);
       const o = await storage.createOfficer(data);
-      await audit("create_officer", "officer", o.id, `Added officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})`, req.body.actor);
+      await audit("create_officer", "officer", o.id,
+        o.type === "business" ? `Added business "${o.firstName}"` : `Added officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})`,
+        req.body.actor);
       res.json(o);
     } catch (e) { handleErr(e, res); }
   });
@@ -321,7 +323,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const o = await storage.updateOfficer(Number(req.params.id), patch);
     if (!o) return res.status(404).json({ message: "Not found" });
     const diff = diffDetail(before, o, patch);
-    await audit("update_officer", "officer", o.id, `Updated officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})${diff ? ` — ${diff}` : ""}`, actor);
+    const label = o.type === "business" ? `business "${o.firstName}"` : `officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})`;
+    await audit("update_officer", "officer", o.id, `Updated ${label}${diff ? ` — ${diff}` : ""}`, actor);
     res.json(o);
   });
   app.delete("/api/officers/:id", adminGuard, async (req, res) => {
@@ -333,7 +336,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(409).json({ message: "Cannot delete: officer has items currently issued. Return all items first." });
     await storage.deleteAssignmentsByOfficer(id);
     await storage.deleteOfficer(id);
-    await audit("delete_officer", "officer", id, `Deleted officer ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber}) and purged their assignment history`, req.query.actor as string);
+    await audit("delete_officer", "officer", id,
+      officer.type === "business"
+        ? `Deleted business "${officer.firstName}" and purged its assignment history`
+        : `Deleted officer ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber}) and purged their assignment history`,
+      req.query.actor as string);
     res.json({ ok: true });
   });
 

@@ -17,7 +17,7 @@ export default function Reports() {
 
   const itemOf = (id: number) => items?.find((i) => i.id === id);
   const officerOf = (id: number) => officers?.find((o) => o.id === id);
-  const oName = (id: number) => { const o = officerOf(id); return o ? `${o.lastName}, ${o.firstName} (#${o.badgeNumber})` : `#${id}`; };
+  const oName = (id: number) => { const o = officerOf(id); return o ? ((o.type ?? "person") === "business" ? `${o.firstName} (Business)` : `${o.lastName}, ${o.firstName} (#${o.badgeNumber})`) : `#${id}`; };
 
   const active = useMemo(() => (assignments ?? []).filter((a) => a.status === "active"), [assignments]);
 
@@ -88,14 +88,14 @@ export default function Reports() {
                 <SelectItem value="all" data-testid="option-issued-all">All officers</SelectItem>
                 {issuedOfficers.map((o) => (
                   <SelectItem key={o.id} value={String(o.id)} data-testid={`option-issued-${o.id}`}>
-                    {o.lastName}, {o.firstName} (#{o.badgeNumber})
+                    {(o.type ?? "person") === "business" ? `${o.firstName} (Business)` : `${o.lastName}, ${o.firstName} (#${o.badgeNumber})`}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
           <ReportShell
-            title={selectedOfficer ? `Issued to ${selectedOfficer.firstName} ${selectedOfficer.lastName}` : "Currently Issued Equipment"}
+            title={selectedOfficer ? `Issued to ${(selectedOfficer.type ?? "person") === "business" ? selectedOfficer.firstName : `${selectedOfficer.firstName} ${selectedOfficer.lastName}`}` : "Currently Issued Equipment"}
             onExport={() => exportCsv(selectedOfficer ? `issued_${selectedOfficer.lastName}.csv` : "issued.csv", issuedRows.map((a) => ({
               Officer: oName(a.officerId), Item: itemOf(a.itemId)?.name, Qty: a.quantity, Issued: fmtDate(a.issuedAt), Due: fmtDate(a.dueDate), Condition: a.conditionOut,
             })))}>

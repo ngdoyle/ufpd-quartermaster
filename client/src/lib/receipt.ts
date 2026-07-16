@@ -113,7 +113,9 @@ export function buildIssueReceipt(data: IssueReceiptData): jsPDF {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   let y = header(doc, "Equipment Issue Receipt");
   y = kv(doc, y, "Receipt time", data.timestamp);
-  y = kv(doc, y, "Officer", `${data.officerName} (#${data.badgeNumber})`);
+  y = data.badgeNumber
+    ? kv(doc, y, "Officer", `${data.officerName} (#${data.badgeNumber})`)
+    : kv(doc, y, "Recipient", data.officerName);
   if (data.issuedBy) y = kv(doc, y, "Issued by", data.issuedBy);
   if (data.issuedLocation) y = kv(doc, y, "Issued location", data.issuedLocation);
   if (data.dueDate) y = kv(doc, y, "Due date", data.dueDate);
@@ -140,7 +142,9 @@ export function buildReturnReceipt(data: ReturnReceiptData): jsPDF {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   let y = header(doc, "Equipment Return Receipt");
   y = kv(doc, y, "Receipt time", data.timestamp);
-  y = kv(doc, y, "Officer", `${data.officerName} (#${data.badgeNumber})`);
+  y = data.badgeNumber
+    ? kv(doc, y, "Officer", `${data.officerName} (#${data.badgeNumber})`)
+    : kv(doc, y, "Recipient", data.officerName);
   if (data.returnedBy) y = kv(doc, y, "Returned by", data.returnedBy);
   if (data.conditionIn) y = kv(doc, y, "Condition in", data.conditionIn);
   y += 3;

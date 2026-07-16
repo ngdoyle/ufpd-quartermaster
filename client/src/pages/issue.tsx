@@ -221,7 +221,9 @@ export default function IssueReturn() {
       ? (dual ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}` : `${u.serialNumber} / ${u.secondarySerialNumber}`)
       : u.serialNumber;
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
-  const officerName = (id: number) => { const o = officers?.find((x) => x.id === id); return o ? `${o.firstName} ${o.lastName} (#${o.badgeNumber})` : `Officer #${id}`; };
+  const isBiz = (o: { type?: string | null }) => (o.type ?? "person") === "business";
+  const recipName = (o: { type?: string | null; firstName: string; lastName: string }) => isBiz(o) ? o.firstName : `${o.firstName} ${o.lastName}`;
+  const officerName = (id: number) => { const o = officers?.find((x) => x.id === id); return o ? (isBiz(o) ? o.firstName : `${o.firstName} ${o.lastName} (#${o.badgeNumber})`) : `Officer #${id}`; };
 
   const active = useMemo(() => {
     const list = (assignments ?? []).filter((a) => a.status === "active");
@@ -372,13 +374,13 @@ export default function IssueReturn() {
         queryClient.invalidateQueries({ queryKey: ["/api/items", id, "variants"] });
       });
       const n = lines.length;
-      const who = selectedOfficer ? `${selectedOfficer.firstName} ${selectedOfficer.lastName}` : "officer";
+      const who = selectedOfficer ? recipName(selectedOfficer) : "officer";
       // Build the issue receipt from the cart before it is cleared (#2).
       if (selectedOfficer) {
         setIssueReceipt({
           count: n,
           timestamp: fmtDateTime(new Date().toISOString()),
-          officerName: `${selectedOfficer.firstName} ${selectedOfficer.lastName}`,
+          officerName: recipName(selectedOfficer),
           badgeNumber: selectedOfficer.badgeNumber,
           issuedBy: issuedBy || user?.name || null,
           issuedLocation: issuedLocation || null,
@@ -437,7 +439,7 @@ export default function IssueReturn() {
       setReturnReceipt({
         itemLabel,
         timestamp: fmtDateTime(new Date().toISOString()),
-        officerName: officer ? `${officer.firstName} ${officer.lastName}` : "Officer",
+        officerName: officer ? recipName(officer) : "Officer",
         badgeNumber: officer?.badgeNumber ?? String(a.officerId),
         returnedBy: user?.name ?? null,
         conditionIn,
@@ -482,7 +484,9 @@ export default function IssueReturn() {
                   <SelectTrigger data-testid="select-officer"><SelectValue placeholder="Select officer…" /></SelectTrigger>
                   <SelectContent>
                     {officers?.filter((o) => o.status === "active").map((o) => (
-                      <SelectItem key={o.id} value={String(o.id)}>{o.lastName}, {o.firstName} · #{o.badgeNumber}</SelectItem>
+                      <SelectItem key={o.id} value={String(o.id)}>
+                        {isBiz(o) ? `${o.firstName} (Business)` : `${o.lastName}, ${o.firstName} · #${o.badgeNumber}`}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -756,7 +760,7 @@ export default function IssueReturn() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><PackageCheck className="h-5 w-5 text-primary" /> Issue complete</DialogTitle>
             <DialogDescription>
-              {issueReceipt && `${issueReceipt.count} item${issueReceipt.count === 1 ? "" : "s"} issued to ${issueReceipt.officerName} (#${issueReceipt.badgeNumber}).`}
+              {issueReceipt && `${issueReceipt.count} item${issueReceipt.count === 1 ? "" : "s"} issued to ${issueReceipt.officerName}${issueReceipt.badgeNumber ? ` (#${issueReceipt.badgeNumber})` : ""}.`}
             </DialogDescription>
           </DialogHeader>
           {issueReceipt && (
@@ -781,7 +785,7 @@ export default function IssueReturn() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><ArrowDownLeft className="h-5 w-5 text-primary" /> Return complete</DialogTitle>
             <DialogDescription>
-              {returnReceipt && `${returnReceipt.itemLabel} returned from ${returnReceipt.officerName} (#${returnReceipt.badgeNumber}) — condition ${returnReceipt.conditionIn}.`}
+              {returnReceipt && `${returnReceipt.itemLabel} returned from ${returnReceipt.officerName}${returnReceipt.badgeNumber ? ` (#${returnReceipt.badgeNumber})` : ""} — condition ${returnReceipt.conditionIn}.`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

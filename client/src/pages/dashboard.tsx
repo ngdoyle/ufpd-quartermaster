@@ -26,7 +26,7 @@ export default function Dashboard() {
 
   const officerName = (id: number) => {
     const o = officers?.find((x) => x.id === id);
-    return o ? `${o.lastName}, ${o.firstName}` : `Officer #${id}`;
+    return o ? ((o.type ?? "person") === "business" ? o.firstName : `${o.lastName}, ${o.firstName}`) : `Officer #${id}`;
   };
 
   if (isLoading || !data) {

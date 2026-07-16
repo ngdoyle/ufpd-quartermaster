@@ -42,6 +42,7 @@ export default function Officers() {
   const { data: assignments } = useQuery<Assignment[]>({ queryKey: ["/api/assignments"] });
 
   const [q, setQ] = useState("");
+  const [tab, setTab] = useState<"person" | "business">("person");
   const [form, setForm] = useState<Partial<Officer> | null>(null);
   const [detail, setDetail] = useState<Officer | null>(null);
   const [saving, setSaving] = useState(false);
@@ -59,6 +60,7 @@ export default function Officers() {
     if (!officers) return [];
     const t = q.toLowerCase();
     const matched = officers.filter((o) => {
+      if ((o.type ?? "person") !== tab) return false;
       if (t && ![o.firstName, o.lastName, o.badgeNumber, o.unit, o.rank].some((f) => f?.toLowerCase().includes(t))) return false;
       if (rankFilter !== "all" && o.rank !== rankFilter) return false;
       if (unitFilter !== "all" && !parseUnits(o.unit).includes(unitFilter)) return false;
@@ -81,23 +83,41 @@ export default function Officers() {
       return sortAsc ? r : -r;
     };
     return [...matched].sort(cmp);
-  }, [officers, q, rankFilter, unitFilter, statusFilter, sortKey, sortAsc]);
+  }, [officers, q, tab, rankFilter, unitFilter, statusFilter, sortKey, sortAsc]);
+
+  const isBiz = (o: { type?: string | null }) => (o.type ?? "person") === "business";
+  const dispName = (o: Officer) => isBiz(o) ? o.firstName : `${o.firstName} ${o.lastName}`;
+  const counts = useMemo(() => {
+    let person = 0, business = 0;
+    for (const o of officers ?? []) (o.type ?? "person") === "business" ? business++ : person++;
+    return { person, business };
+  }, [officers]);
+
+  function newBusiness(): Partial<Officer> {
+    return { type: "business", firstName: "", lastName: "", badgeNumber: "", rank: null, unit: "", email: "", phone: "", status: "active", notes: "" };
+  }
 
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
   const itemById = (id: number) => items?.find((i) => i.id === id);
   const activeFor = (officerId: number) => (assignments ?? []).filter((a) => a.officerId === officerId && a.status === "active");
 
   async function save() {
-    if (!form?.firstName || !form?.lastName || !form?.badgeNumber)
+    const biz = isBiz(form ?? { type: "person" });
+    if (biz) {
+      if (!form?.firstName?.trim()) return toast({ title: "Business name is required", variant: "destructive" });
+    } else if (!form?.firstName || !form?.lastName || !form?.badgeNumber) {
       return toast({ title: "Name and badge number are required", variant: "destructive" });
+    }
     setSaving(true);
     try {
-      const payload = { ...form, actor: user?.name };
-      if (form.id) await apiRequest("PATCH", `/api/officers/${form.id}`, payload);
+      const payload = biz
+        ? { ...form, lastName: form?.lastName ?? "", badgeNumber: form?.badgeNumber ?? "", rank: null, actor: user?.name }
+        : { ...form, actor: user?.name };
+      if (form?.id) await apiRequest("PATCH", `/api/officers/${form.id}`, payload);
       else await apiRequest("POST", "/api/officers", payload);
       queryClient.invalidateQueries({ queryKey: ["/api/officers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
-      toast({ title: form.id ? "Officer updated" : "Officer added" });
+      toast({ title: form?.id ? (biz ? "Business updated" : "Officer updated") : (biz ? "Business added" : "Officer added") });
       setForm(null);
     } catch (e: any) {
       toast({ title: "Save failed", description: e.message, variant: "destructive" });
@@ -130,12 +150,18 @@ export default function Officers() {
 
   return (
     <div>
-      <PageHeader title="Personnel Roster" subtitle={`${officers?.length ?? 0} officers`}
+      <PageHeader title="Personnel Roster" subtitle={`${counts.person} personnel · ${counts.business} businesses`}
         actions={<>
           <Button variant="outline" size="sm" onClick={doExport} data-testid="button-export-officers"><Download className="mr-1.5 h-4 w-4" /> Export CSV</Button>
-          {editable && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} data-testid="button-import-officers"><Upload className="mr-1.5 h-4 w-4" /> Bulk Import</Button>}
-          {editable && <Button size="sm" onClick={() => setForm(blank())} data-testid="button-add-officer"><Plus className="mr-1.5 h-4 w-4" /> Add Officer</Button>}
+          {editable && tab === "person" && <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} data-testid="button-import-officers"><Upload className="mr-1.5 h-4 w-4" /> Bulk Import</Button>}
+          {editable && tab === "person" && <Button size="sm" onClick={() => setForm(blank())} data-testid="button-add-officer"><Plus className="mr-1.5 h-4 w-4" /> Add Officer</Button>}
+          {editable && tab === "business" && <Button size="sm" onClick={() => setForm(newBusiness())} data-testid="button-add-business"><Plus className="mr-1.5 h-4 w-4" /> Add Business</Button>}
         </>} />
+
+      <div className="mb-4 inline-flex rounded-md border border-border p-0.5">
+        <Button variant={tab === "person" ? "default" : "ghost"} size="sm" className="rounded-sm" onClick={() => setTab("person")} data-testid="tab-personnel">Personnel</Button>
+        <Button variant={tab === "business" ? "default" : "ghost"} size="sm" className="rounded-sm" onClick={() => setTab("business")} data-testid="tab-businesses">Businesses</Button>
+      </div>
 
       <Card className="mb-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -144,21 +170,21 @@ export default function Officers() {
             <Input className="pl-8" placeholder="Search by name, badge, unit…" value={q} onChange={(e) => setQ(e.target.value)} data-testid="input-search-officers" />
           </div>
 
-          <Select value={rankFilter} onValueChange={setRankFilter}>
+          {tab === "person" && <Select value={rankFilter} onValueChange={setRankFilter}>
             <SelectTrigger className="h-9 w-[130px]" data-testid="select-filter-rank"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Ranks</SelectItem>
               {RANKS.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
             </SelectContent>
-          </Select>
+          </Select>}
 
-          <Select value={unitFilter} onValueChange={setUnitFilter}>
+          {tab === "person" && <Select value={unitFilter} onValueChange={setUnitFilter}>
             <SelectTrigger className="h-9 w-[130px]" data-testid="select-filter-unit"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Units</SelectItem>
               {UNITS.map((u) => <SelectItem key={u} value={u}>{u}</SelectItem>)}
             </SelectContent>
-          </Select>
+          </Select>}
 
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="h-9 w-[120px]" data-testid="select-filter-status"><SelectValue /></SelectTrigger>
@@ -202,7 +228,7 @@ export default function Officers() {
       {isLoading ? (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-lg" />)}</div>
       ) : filtered.length === 0 ? (
-        <EmptyState title="No officers found" hint="No officers match your filters" />
+        <EmptyState title={tab === "business" ? "No businesses found" : "No officers found"} hint={tab === "business" ? "Add a business/vendor to issue gear to them" : "No officers match your filters"} />
       ) : view === "rows" ? (
         <Card className="overflow-x-auto">
           <Table>
@@ -220,9 +246,9 @@ export default function Officers() {
             <TableBody>
               {filtered.map((o) => (
                 <TableRow key={o.id} className="cursor-pointer" onClick={() => setDetail(o)} data-testid={`row-officer-${o.id}`}>
-                  <TableCell className="font-medium">{o.firstName} {o.lastName}</TableCell>
-                  <TableCell className="text-muted-foreground">#{o.badgeNumber}</TableCell>
-                  <TableCell>{o.rank}</TableCell>
+                  <TableCell className="font-medium">{dispName(o)}</TableCell>
+                  <TableCell className="text-muted-foreground">{o.badgeNumber ? `#${o.badgeNumber}` : "—"}</TableCell>
+                  <TableCell>{isBiz(o) ? "Business" : o.rank}</TableCell>
                   <TableCell className="text-muted-foreground">{o.unit || "—"}</TableCell>
                   <TableCell><StatusBadge status={o.status} /></TableCell>
                   <TableCell className="text-right">{activeFor(o.id).length}</TableCell>
@@ -249,11 +275,11 @@ export default function Officers() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-3 min-w-0">
                     <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary text-sm font-semibold">
-                      {o.firstName[0]}{o.lastName[0]}
+                      {o.firstName[0]}{isBiz(o) ? "" : o.lastName[0]}
                     </span>
                     <div className="min-w-0">
-                      <p className="font-medium leading-tight truncate">{o.firstName} {o.lastName}</p>
-                      <p className="text-xs text-muted-foreground">#{o.badgeNumber} · {o.rank}</p>
+                      <p className="font-medium leading-tight truncate">{dispName(o)}</p>
+                      <p className="text-xs text-muted-foreground">{isBiz(o) ? "Business/Vendor" : `#${o.badgeNumber} · ${o.rank}`}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -285,11 +311,13 @@ export default function Officers() {
               <SheetHeader>
                 <SheetTitle className="flex items-center gap-3">
                   <span className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/12 text-primary text-base font-semibold">
-                    {detail.firstName[0]}{detail.lastName[0]}
+                    {detail.firstName[0]}{isBiz(detail) ? "" : detail.lastName[0]}
                   </span>
                   <span>
-                    <span className="block">{detail.firstName} {detail.lastName}</span>
-                    <span className="block text-xs font-normal text-muted-foreground">#{detail.badgeNumber} · {detail.rank} · {detail.unit}</span>
+                    <span className="block">{dispName(detail)}</span>
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      {isBiz(detail) ? `Business/Vendor${detail.unit ? ` · ${detail.unit}` : ""}` : `#${detail.badgeNumber} · ${detail.rank} · ${detail.unit}`}
+                    </span>
                   </span>
                 </SheetTitle>
               </SheetHeader>
@@ -299,24 +327,28 @@ export default function Officers() {
                   {detail.email && <a href={`mailto:${detail.email}`} className="flex items-center gap-2 text-primary"><Mail className="h-4 w-4" />{detail.email}</a>}
                   {detail.phone && <span className="flex items-center gap-2 text-muted-foreground"><Phone className="h-4 w-4" />{detail.phone}</span>}
                 </div>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Hire date</span><span>{fmtDate(detail.hireDate)}</span>
-                </div>
-
-                {/* Sizing */}
-                <div>
-                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><Shirt className="h-4 w-4 text-primary" /> Uniform & Gear Sizing</div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {([["Shirt", detail.shirtSize], ["Pants", detail.pantsSize], ["Jacket", detail.jacketSize],
-                       ["Shoe", detail.shoeSize], ["Vest", detail.vestSize], ["Hat", detail.hatSize],
-                       ["Glove", detail.gloveSize]] as [string, string | null][]).map(([k, v]) => (
-                      <div key={k} className="rounded-md border border-border bg-muted/40 p-2 text-center">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{k}</div>
-                        <div className="text-sm font-medium">{v || "—"}</div>
-                      </div>
-                    ))}
+                {!isBiz(detail) && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Hire date</span><span>{fmtDate(detail.hireDate)}</span>
                   </div>
-                </div>
+                )}
+
+                {/* Sizing (personnel only) */}
+                {!isBiz(detail) && (
+                  <div>
+                    <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><Shirt className="h-4 w-4 text-primary" /> Uniform & Gear Sizing</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {([["Shirt", detail.shirtSize], ["Pants", detail.pantsSize], ["Jacket", detail.jacketSize],
+                         ["Shoe", detail.shoeSize], ["Vest", detail.vestSize], ["Hat", detail.hatSize],
+                         ["Glove", detail.gloveSize]] as [string, string | null][]).map(([k, v]) => (
+                        <div key={k} className="rounded-md border border-border bg-muted/40 p-2 text-center">
+                          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{k}</div>
+                          <div className="text-sm font-medium">{v || "—"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Issued items */}
                 <div>
@@ -354,10 +386,10 @@ export default function Officers() {
 
                 {detail.notes && <div className="rounded-md bg-muted/40 p-3 text-sm"><span className="text-muted-foreground">Notes: </span>{detail.notes}</div>}
 
-                {editable && <Button className="w-full" onClick={() => { setForm(detail); setDetail(null); }}><Pencil className="mr-1.5 h-4 w-4" /> Edit Officer</Button>}
+                {editable && <Button className="w-full" onClick={() => { setForm(detail); setDetail(null); }}><Pencil className="mr-1.5 h-4 w-4" /> Edit {isBiz(detail) ? "Business" : "Officer"}</Button>}
                 {isAdmin && (
                   <Button variant="destructive" className="w-full" onClick={() => setDeleteTarget(detail)} data-testid={`button-delete-officer-detail-${detail.id}`}>
-                    <Trash2 className="mr-1.5 h-4 w-4" /> Delete Officer
+                    <Trash2 className="mr-1.5 h-4 w-4" /> Delete {isBiz(detail) ? "Business" : "Officer"}
                   </Button>
                 )}
               </div>
@@ -370,10 +402,24 @@ export default function Officers() {
       <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{form?.id ? "Edit Officer" : "Add Officer"}</DialogTitle>
-            <DialogDescription>Personnel profile including uniform and gear sizing.</DialogDescription>
+            <DialogTitle>{form?.id ? (isBiz(form) ? "Edit Business" : "Edit Officer") : (isBiz(form ?? { type: "person" }) ? "Add Business" : "Add Officer")}</DialogTitle>
+            <DialogDescription>{isBiz(form ?? { type: "person" }) ? "Business/vendor you can issue equipment to (e.g. for maintenance)." : "Personnel profile including uniform and gear sizing."}</DialogDescription>
           </DialogHeader>
-          {form && (
+          {form && isBiz(form) ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field className="sm:col-span-2" label="Business name"><Input value={form.firstName ?? ""} onChange={(e) => setForm({ ...form, firstName: e.target.value })} data-testid="input-business-name" /></Field>
+              <Field label="Contact person"><Input value={form.unit ?? ""} onChange={(e) => setForm({ ...form, unit: e.target.value })} data-testid="input-business-contact" /></Field>
+              <Field label="Status">
+                <Select value={form.status ?? "active"} onValueChange={(v) => setForm({ ...form, status: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+                </Select>
+              </Field>
+              <Field label="Email"><Input value={form.email ?? ""} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="input-business-email" /></Field>
+              <Field label="Phone"><Input value={form.phone ?? ""} onChange={(e) => setForm({ ...form, phone: e.target.value })} data-testid="input-business-phone" /></Field>
+              <Field className="sm:col-span-2" label="Address / notes"><Textarea rows={2} value={form.notes ?? ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} data-testid="input-business-notes" /></Field>
+            </div>
+          ) : form && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Badge #"><Input value={form.badgeNumber ?? ""} onChange={(e) => setForm({ ...form, badgeNumber: e.target.value })} data-testid="input-badge" /></Field>
               <Field label="Status">
@@ -561,7 +607,7 @@ function ReprintReceiptButton({ assignment, item, officer }: { assignment: Assig
   function reprint() {
     downloadIssueReceipt({
       timestamp: fmtDateTime(assignment.issuedAt),
-      officerName: `${officer.firstName} ${officer.lastName}`,
+      officerName: (officer.type ?? "person") === "business" ? officer.firstName : `${officer.firstName} ${officer.lastName}`,
       badgeNumber: officer.badgeNumber,
       issuedBy: assignment.issuedBy ?? null,
       issuedLocation: assignment.issuedLocation ?? null,
