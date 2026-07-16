@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS items (
   "status"             text NOT NULL DEFAULT 'in_stock',
   "returnBehavior"     text DEFAULT 'returnable',
   "requiresInspection" boolean NOT NULL DEFAULT false,
+  "requiresDualSerial" boolean NOT NULL DEFAULT false,
   "lastInspected"      text,
   "imageUrl"           text,
   "attributes"         text,
@@ -129,6 +130,7 @@ CREATE TABLE IF NOT EXISTS assignments (
   "dueDate"       text,
   "returnedAt"    text,
   "issuedBy"      text,
+  "issuedLocation" text,
   "returnedBy"    text,
   "signature"     text,
   "notes"         text
@@ -255,6 +257,7 @@ BEGIN
        a.elem->>'dueDate'                 AS "dueDate",
        a.elem->>'returnedAt'              AS "returnedAt",
        a.elem->>'issuedBy'                AS "issuedBy",
+       a.elem->>'issuedLocation'          AS "issuedLocation",
        a.elem->>'returnedBy'              AS "returnedBy",
        a.elem->>'signature'               AS "signature",
        a.elem->>'notes'                   AS "notes",
@@ -266,10 +269,10 @@ BEGIN
     INSERT INTO assignments
       ("itemId","itemUnitId","itemVariantId","officerId","quantity","status",
        "conditionOut","conditionIn","issuedAt","dueDate","returnedAt","issuedBy",
-       "returnedBy","signature","notes")
+       "issuedLocation","returnedBy","signature","notes")
     SELECT "itemId","itemUnitId","itemVariantId","officerId","quantity","status",
            "conditionOut","conditionIn","issuedAt","dueDate","returnedAt","issuedBy",
-           "returnedBy","signature","notes"
+           "issuedLocation","returnedBy","signature","notes"
       FROM src ORDER BY ord
     RETURNING *
   )
@@ -400,6 +403,7 @@ BEGIN
        a.elem->>'dueDate'                 AS "dueDate",
        a.elem->>'returnedAt'              AS "returnedAt",
        a.elem->>'issuedBy'                AS "issuedBy",
+       a.elem->>'issuedLocation'          AS "issuedLocation",
        a.elem->>'returnedBy'              AS "returnedBy",
        a.elem->>'signature'               AS "signature",
        a.elem->>'notes'                   AS "notes",
@@ -411,10 +415,10 @@ BEGIN
     INSERT INTO assignments
       ("itemId","itemUnitId","itemVariantId","officerId","quantity","status",
        "conditionOut","conditionIn","issuedAt","dueDate","returnedAt","issuedBy",
-       "returnedBy","signature","notes")
+       "issuedLocation","returnedBy","signature","notes")
     SELECT "itemId","itemUnitId","itemVariantId","officerId","quantity","status",
            "conditionOut","conditionIn","issuedAt","dueDate","returnedAt","issuedBy",
-           "returnedBy","signature","notes"
+           "issuedLocation","returnedBy","signature","notes"
       FROM src ORDER BY ord
     RETURNING *
   )

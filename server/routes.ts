@@ -49,11 +49,38 @@ const loginLimiter = rateLimit({
 });
 
 async function audit(action: string, entity: string, entityId: number | undefined, detail: string, username?: string) {
-  await storage.addAudit({ action, entity, entityId: entityId ?? null as any, detail, username: username ?? null as any, timestamp: nowISO() });
+  // Keep detail as plain text and bounded (~300 chars) — truncate gracefully so
+  // a huge diff can never blow past the column's practical display width.
+  const MAX = 300;
+  const safe = detail.length > MAX ? detail.slice(0, MAX - 1) + "…" : detail;
+  await storage.addAudit({ action, entity, entityId: entityId ?? null as any, detail: safe, username: username ?? null as any, timestamp: nowISO() });
+}
+
+// Human-readable before→after diff for audit `detail`. Compares only the fields
+// present in `patch`; lists each changed field as `field: old → new` and adds a
+// signed delta for numeric fields (e.g. `quantity: 500 → 8000 (+7500)`).
+function diffDetail(before: Record<string, any> | undefined, after: Record<string, any> | undefined, patch: Record<string, any>, skip: string[] = []): string {
+  const skipSet = new Set([...skip, "actor"]);
+  const fmt = (v: any) => (v == null || v === "") ? "(empty)" : typeof v === "boolean" ? (v ? "yes" : "no") : String(v);
+  const parts: string[] = [];
+  for (const f of Object.keys(patch)) {
+    if (skipSet.has(f)) continue;
+    const o = before?.[f];
+    const n = after?.[f];
+    if (o === n) continue;
+    if ((o == null || o === "") && (n == null || n === "")) continue;
+    if (typeof o === "number" && typeof n === "number") {
+      const delta = n - o;
+      parts.push(`${f}: ${o} → ${n} (${delta >= 0 ? "+" : ""}${delta})`);
+    } else {
+      parts.push(`${f}: ${fmt(o)} → ${fmt(n)}`);
+    }
+  }
+  return parts.join(", ");
 }
 
 type IssueLineInput = { itemId: number; quantity: number; itemUnitId?: number | null; itemVariantId?: number | null };
-type IssueOpts = { dueDate?: string | null; signature?: string; notes?: string; conditionOut?: string; issuedBy?: string };
+type IssueOpts = { dueDate?: string | null; signature?: string; notes?: string; conditionOut?: string; issuedBy?: string; issuedLocation?: string };
 type PlanLineError = { index: number; message: string; code: number };
 type IssuePlanResult =
   | ({ ok: true; auditDetails: string[] } & IssueBatchPlan)
@@ -101,6 +128,7 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
     let itemUnitId: number | null = null;
     let itemVariantId: number | null = null;
     let sizeSuffix = "";
+    let serialInfo = "";
 
     if (item.type === "sized") {
       const variant = line.itemVariantId ? await getVariantCached(line.itemVariantId) : undefined;
@@ -120,6 +148,9 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
         if (usedUnitIds.has(unit.id)) { fail("That unit is already selected on another line.", 409); continue; }
         usedUnitIds.add(unit.id);
         itemUnitId = unit.id;
+        serialInfo = item.requiresDualSerial && unit.secondarySerialNumber
+          ? ` [FP ${unit.serialNumber} / BP ${unit.secondarySerialNumber}]`
+          : ` [serial ${unit.serialNumber}]`;
       } else {
         // Legacy serialized item with no tracked units — fall back to quantity.
         if (!itemRemaining.has(item.id)) itemRemaining.set(item.id, item.quantity);
@@ -140,10 +171,13 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
       officerId: officer.id, quantity: line.quantity, status: "active",
       conditionOut: opts.conditionOut ?? item.condition ?? "New", conditionIn: null as any,
       issuedAt: nowISO(), dueDate: opts.dueDate ?? null as any, returnedAt: null as any,
-      issuedBy: opts.issuedBy ?? null as any, returnedBy: null as any,
+      issuedBy: opts.issuedBy ?? null as any, issuedLocation: opts.issuedLocation ?? null as any,
+      returnedBy: null as any,
       signature: opts.signature ?? null as any, notes: opts.notes ?? null as any,
     });
-    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix} to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})`);
+    const byPart = opts.issuedBy ? `, by ${opts.issuedBy}` : "";
+    const locPart = opts.issuedLocation ? `, at ${opts.issuedLocation}` : "";
+    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix}${serialInfo} to ${officer.firstName} ${officer.lastName} (#${officer.badgeNumber})${byPart}${locPart}`);
   }
 
   if (errors.length) return { ok: false, errors };
@@ -217,15 +251,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.patch("/api/users/:id", adminGuard, async (req, res) => {
     // If a password is being set/reset here, hash it before persisting.
     const patch = { ...req.body };
+    const pwChanged = !!patch.password;
     if (patch.password) patch.password = hashPassword(patch.password);
+    const before = await storage.getUser(Number(req.params.id));
     const u = await storage.updateUser(Number(req.params.id), patch);
     if (!u) return res.status(404).json({ message: "Not found" });
-    await audit("update_user", "user", u.id, `Updated account ${u.username}`, req.body.actor);
+    const diff = diffDetail(before, u, req.body, ["password"]);
+    const changes = [diff, pwChanged ? "password changed" : ""].filter(Boolean).join(", ");
+    await audit("update_user", "user", u.id, `Updated account ${u.username}${changes ? ` — ${changes}` : ""}`, req.body.actor);
     res.json(stripPw(u));
   });
   app.delete("/api/users/:id", adminGuard, async (req, res) => {
+    const before = await storage.getUser(Number(req.params.id));
     await storage.deleteUser(Number(req.params.id));
-    await audit("delete_user", "user", Number(req.params.id), `Deleted user #${req.params.id}`, req.query.actor as string);
+    await audit("delete_user", "user", Number(req.params.id), `Deleted account ${before?.username ?? `#${req.params.id}`}`, req.query.actor as string);
     res.json({ ok: true });
   });
 
@@ -264,9 +303,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ created, errors });
   });
   app.patch("/api/officers/:id", writeGuard, async (req, res) => {
+    const before = await storage.getOfficer(Number(req.params.id));
     const o = await storage.updateOfficer(Number(req.params.id), req.body);
     if (!o) return res.status(404).json({ message: "Not found" });
-    await audit("update_officer", "officer", o.id, `Updated officer ${o.firstName} ${o.lastName}`, req.body.actor);
+    const diff = diffDetail(before, o, req.body);
+    await audit("update_officer", "officer", o.id, `Updated officer ${o.firstName} ${o.lastName} (#${o.badgeNumber})${diff ? ` — ${diff}` : ""}`, req.body.actor);
     res.json(o);
   });
   app.delete("/api/officers/:id", adminGuard, async (req, res) => {
@@ -410,14 +451,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ created, errors });
   });
   app.patch("/api/items/:id", writeGuard, async (req, res) => {
+    const before = await storage.getItem(Number(req.params.id));
     const i = await storage.updateItem(Number(req.params.id), req.body);
     if (!i) return res.status(404).json({ message: "Not found" });
-    await audit("update_item", "item", i.id, `Updated item "${i.name}"`, req.body.actor);
+    const diff = diffDetail(before, i, req.body);
+    await audit("update_item", "item", i.id, `Updated item "${i.name}"${diff ? ` — ${diff}` : ""}`, req.body.actor);
     res.json(i);
   });
   app.delete("/api/items/:id", writeGuard, async (req, res) => {
+    const before = await storage.getItem(Number(req.params.id));
     await storage.deleteItem(Number(req.params.id));
-    await audit("delete_item", "item", Number(req.params.id), `Deleted item #${req.params.id}`, req.query.actor as string);
+    await audit("delete_item", "item", Number(req.params.id), `Deleted item "${before?.name ?? `#${req.params.id}`}"`, req.query.actor as string);
     res.json({ ok: true });
   });
 
@@ -438,16 +482,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const body = req.body ?? {};
       const created: any[] = [];
 
-      const make = (serialNumber: string, secondary?: string | null) =>
-        storage.createUnit({
+      const make = (serialNumber: string, secondary?: string | null) => {
+        const primary = String(serialNumber).trim();
+        const sec = secondary != null && String(secondary).trim() !== "" ? String(secondary).trim() : null;
+        // Dual-serial items (ballistic vests) require BOTH panels.
+        if (item.requiresDualSerial && !sec)
+          throw Object.assign(new Error("Both FP (front panel) and BP (back panel) serials are required."), { status: 400 });
+        return storage.createUnit({
           itemId,
-          serialNumber: String(serialNumber).trim(),
-          secondarySerialNumber: secondary != null && String(secondary).trim() !== "" ? String(secondary).trim() : null,
+          serialNumber: primary,
+          secondarySerialNumber: sec,
           condition: body.condition ?? "New",
           location: body.location ?? item.location ?? "",
           acquiredDate: body.acquiredDate ?? "",
           notes: body.notes ?? "",
         });
+      };
 
       if (Array.isArray(body.serials)) {
         for (const s of body.serials) {
@@ -466,7 +516,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       if (created.length === 0) return res.status(400).json({ message: "No valid serials provided." });
-      await audit("add_unit", "item", itemId, `Added ${created.length} serialized unit(s) to "${item.name}"`, body.actor);
+      const serialList = created.map((u) => item.requiresDualSerial && u.secondarySerialNumber
+        ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}`
+        : u.serialNumber).join(", ");
+      await audit("add_unit", "item", itemId, `Added ${created.length} serialized unit(s) to "${item.name}": ${serialList}`, body.actor);
       res.json(created);
     } catch (e) { handleErr(e, res); }
   });
@@ -476,9 +529,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const unit = await storage.getUnit(Number(req.params.unitId));
       if (!unit) return res.status(404).json({ message: "Unit not found." });
       const { actor, ...patch } = req.body ?? {};
-      const updated = await storage.updateUnit(unit.id, patch);
       const item = await storage.getItem(unit.itemId);
-      await audit("update_unit", "item", unit.itemId, `Updated serial ${updated?.serialNumber ?? unit.serialNumber} on "${item?.name ?? `#${unit.itemId}`}"`, actor);
+      // Dual-serial items require both panels remain populated after an edit.
+      if (item?.requiresDualSerial) {
+        const nextSecondary = "secondarySerialNumber" in patch ? patch.secondarySerialNumber : unit.secondarySerialNumber;
+        const nextPrimary = "serialNumber" in patch ? patch.serialNumber : unit.serialNumber;
+        if (!nextPrimary || String(nextPrimary).trim() === "" || !nextSecondary || String(nextSecondary).trim() === "")
+          return res.status(400).json({ message: "Both FP (front panel) and BP (back panel) serials are required." });
+      }
+      const updated = await storage.updateUnit(unit.id, patch);
+      const serialLabel = item?.requiresDualSerial && updated?.secondarySerialNumber
+        ? `FP ${updated.serialNumber} / BP ${updated.secondarySerialNumber}`
+        : (updated?.serialNumber ?? unit.serialNumber);
+      const diff = diffDetail(unit, updated, patch);
+      await audit("update_unit", "item", unit.itemId, `Updated serial ${serialLabel} on "${item?.name ?? `#${unit.itemId}`}"${diff ? ` — ${diff}` : ""}`, actor);
       res.json(updated);
     } catch (e) { handleErr(e, res); }
   });
@@ -548,7 +612,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (rest.notes !== undefined) patch.notes = rest.notes ?? null;
       const updated = await storage.updateVariant(variant.id, patch);
       const item = await storage.getItem(variant.itemId);
-      await audit("update_variant", "item", variant.itemId, `Updated size ${updated?.size ?? variant.size} on "${item?.name ?? `#${variant.itemId}`}"`, actor);
+      const diff = diffDetail(variant, updated, patch);
+      await audit("update_variant", "item", variant.itemId, `Updated size ${updated?.size ?? variant.size} on "${item?.name ?? `#${variant.itemId}`}"${diff ? ` — ${diff}` : ""}`, actor);
       res.json(updated);
     } catch (e) { handleErr(e, res); }
   });
@@ -586,7 +651,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         itemId: z.number(), officerId: z.number(), quantity: z.number().min(1).default(1),
         itemUnitId: z.number().nullish(), itemVariantId: z.number().nullish(),
         conditionOut: z.string().optional(), dueDate: z.string().nullish(),
-        issuedBy: z.string().optional(), signature: z.string().optional(), notes: z.string().optional(),
+        issuedBy: z.string().optional(), issuedLocation: z.string().optional(),
+        signature: z.string().optional(), notes: z.string().optional(),
       });
       const d = schema.parse(req.body);
       const officer = await storage.getOfficer(d.officerId);
@@ -594,7 +660,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       const plan = await planIssue(officer,
         [{ itemId: d.itemId, quantity: d.quantity, itemUnitId: d.itemUnitId, itemVariantId: d.itemVariantId }],
-        { dueDate: d.dueDate, signature: d.signature, notes: d.notes, conditionOut: d.conditionOut, issuedBy: d.issuedBy });
+        { dueDate: d.dueDate, signature: d.signature, notes: d.notes, conditionOut: d.conditionOut, issuedBy: d.issuedBy, issuedLocation: d.issuedLocation });
       if (!plan.ok) { const e = plan.errors[0]; return res.status(e.code).json({ message: e.message }); }
 
       const [a] = await storage.issueBatch(plan);
@@ -614,6 +680,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         dueDate: z.string().nullish(),
         notes: z.string().optional(),
         issuedBy: z.string().optional(),
+        issuedLocation: z.string().optional(),
         lines: z.array(z.object({
           itemId: z.number(),
           quantity: z.number().int().positive(),
@@ -626,7 +693,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!officer) return res.status(404).json({ message: "Officer not found." });
 
       const plan = await planIssue(officer, d.lines,
-        { dueDate: d.dueDate, signature: d.signature, notes: d.notes, issuedBy: d.issuedBy });
+        { dueDate: d.dueDate, signature: d.signature, notes: d.notes, issuedBy: d.issuedBy, issuedLocation: d.issuedLocation });
       if (!plan.ok)
         return res.status(409).json({ message: "Nothing was issued — one or more lines are invalid.", errors: plan.errors.map((e) => ({ index: e.index, message: e.message })) });
 
@@ -688,8 +755,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         plan.itemPatch = { id: item.id, quantity: item.quantity + a.quantity, status, condition };
       }
       await storage.returnAssignment(plan);
+      let serialInfo = "";
+      if (item?.type === "unique" && a.itemUnitId) {
+        const unit = await storage.getUnit(a.itemUnitId);
+        if (unit) serialInfo = item.requiresDualSerial && unit.secondarySerialNumber
+          ? ` [FP ${unit.serialNumber} / BP ${unit.secondarySerialNumber}]`
+          : ` [serial ${unit.serialNumber}]`;
+      }
+      const byPart = returnedBy ? `, by ${returnedBy}` : "";
       await audit("return", "assignment", a.id,
-        `Returned "${item?.name}" from ${officer?.firstName} ${officer?.lastName} — condition: ${condition}`, returnedBy);
+        `Returned ${a.quantity}x "${item?.name}"${serialInfo} from ${officer?.firstName} ${officer?.lastName} (#${officer?.badgeNumber}) — condition in: ${condition}${byPart}`, returnedBy);
       res.json({ ok: true });
     } catch (e) { handleErr(e, res); }
   });
@@ -910,6 +985,8 @@ function zMsg(e: unknown): string {
 
 function handleErr(e: unknown, res: Response) {
   if (e instanceof z.ZodError) return res.status(400).json({ message: "Validation failed", errors: e.errors });
+  const status = (e as any)?.status;
+  if (typeof status === "number") return res.status(status).json({ message: (e as Error).message });
   console.error(e);
   res.status(500).json({ message: (e as Error).message ?? "Server error" });
 }

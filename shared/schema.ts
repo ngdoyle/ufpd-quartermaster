@@ -80,6 +80,9 @@ export const items = sqliteTable("items", {
   returnBehavior: text("return_behavior").default("returnable"),
   // inspection gating
   requiresInspection: integer("requires_inspection", { mode: "boolean" }).notNull().default(false),
+  // Dual serials (FP/BP) — for ballistic vests: requires both a primary
+  // (front-panel) and secondary (back-panel) serial on each serialized unit.
+  requiresDualSerial: integer("requires_dual_serial", { mode: "boolean" }).notNull().default(false),
   lastInspected: text("last_inspected"),
   imageUrl: text("image_url"),
   // JSON string of category/subcategory-specific dynamic fields (Make, Model, Caliber, etc.)
@@ -208,6 +211,7 @@ export const assignments = sqliteTable("assignments", {
   dueDate: text("due_date"),
   returnedAt: text("returned_at"),
   issuedBy: text("issued_by"),
+  issuedLocation: text("issued_location"),
   returnedBy: text("returned_by"),
   signature: text("signature"),
   notes: text("notes"),
