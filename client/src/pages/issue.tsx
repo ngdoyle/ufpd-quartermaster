@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useApp } from "@/lib/app-context";
+import { downloadIssueReceipt, downloadReturnReceipt, type IssueReceiptData, type ReturnReceiptData } from "@/lib/receipt";
 import { PageHeader, Pill, TypeBadge, EmptyState } from "@/components/bits";
 import { fmtDate, fmtDateTime, relativeDays } from "@/lib/format";
 import type { Officer, Item, ItemWithStock, Assignment, ItemUnit, ItemVariant } from "@shared/schema";
@@ -34,7 +35,19 @@ type CartLine = {
   unitSerial?: string;
   itemVariantId?: number;
   variantSize?: string;
+  // Serialized/sized lines loaded from a kit start unresolved: the user must
+  // pick a specific serial or size before the cart can be issued (#13/#14).
+  itemType?: string;
+  needsSelection?: boolean;
+  fromKit?: boolean;
+  // Available stock captured at resolve time, for inline over-stock checks.
+  availStock?: number;
 };
+
+// Kit → cart handoff. The Kits page stashes the chosen kit's lines here and
+// navigates to /issue, which drains it on mount (#13/#14).
+const KIT_CART_KEY = "qm_kit_cart";
+export type KitCartPayload = { kitName: string; lines: { itemId: number; quantity: number }[] };
 
 export default function IssueReturn() {
   const { user } = useApp();
@@ -55,7 +68,12 @@ export default function IssueReturn() {
   const [dueDate, setDueDate] = useState("");
   const [signature, setSignature] = useState("");
   const [notes, setNotes] = useState("");
+  const [issuedBy, setIssuedBy] = useState("");
+  const [issuedLocation, setIssuedLocation] = useState("");
   const [issuing, setIssuing] = useState(false);
+  // post-issue / post-return confirmation + receipt (#2)
+  const [issueReceipt, setIssueReceipt] = useState<(IssueReceiptData & { count: number }) | null>(null);
+  const [returnReceipt, setReturnReceipt] = useState<(ReturnReceiptData & { itemLabel: string }) | null>(null);
   // cart of items to issue together to the selected officer
   const [lines, setLines] = useState<CartLine[]>([]);
   const [lineErrors, setLineErrors] = useState<Record<string, string>>({});
@@ -159,8 +177,42 @@ export default function IssueReturn() {
   useEffect(() => {
     if (suggestedInStock && !variantId) setVariantId(String(suggestedInStock.id));
   }, [suggestedInStock]);
-  const unitLabel = (u: ItemUnit) =>
-    u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber;
+  // Default "Issued By" to the logged-in user's display name (editable).
+  useEffect(() => {
+    if (user?.name && !issuedBy) setIssuedBy(user.name);
+  }, [user?.name]);
+
+  // Drain a kit handoff into the cart (#13/#14). Serialized/sized lines land in
+  // a "needs selection" state so the user resolves a serial/size before issuing.
+  // Waits for items to load so line metadata (name/category/type) is available.
+  useEffect(() => {
+    if (!items) return;
+    const raw = sessionStorage.getItem(KIT_CART_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(KIT_CART_KEY);
+    try {
+      const payload = JSON.parse(raw) as KitCartPayload;
+      const newLines: CartLine[] = [];
+      for (const kl of payload.lines) {
+        const item = items.find((i) => i.id === kl.itemId);
+        if (!item) continue;
+        const needsSelection = item.type === "unique" || item.type === "sized";
+        newLines.push({
+          id: crypto.randomUUID(), itemId: item.id, itemName: item.name,
+          categoryLabel: item.category || "Uncategorized", quantity: kl.quantity,
+          itemType: item.type, needsSelection, fromKit: true,
+        });
+      }
+      if (newLines.length) {
+        setLines(newLines);
+        toast({ title: `Loaded kit "${payload.kitName}" into cart`, description: "Pick a serial/size for each highlighted line, then issue." });
+      }
+    } catch { /* ignore malformed handoff */ }
+  }, [items]);
+  const unitLabel = (u: ItemUnit, dual = false) =>
+    u.secondarySerialNumber
+      ? (dual ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}` : `${u.serialNumber} / ${u.secondarySerialNumber}`)
+      : u.serialNumber;
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
   const officerName = (id: number) => { const o = officers?.find((x) => x.id === id); return o ? `${o.firstName} ${o.lastName} (#${o.badgeNumber})` : `Officer #${id}`; };
 
@@ -188,7 +240,8 @@ export default function IssueReturn() {
       const u = inStockUnits.find((x) => String(x.id) === unitId);
       setLines((prev) => [...prev, {
         id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel,
-        quantity: 1, itemUnitId: Number(unitId), unitSerial: u ? unitLabel(u) : undefined,
+        quantity: 1, itemUnitId: Number(unitId), unitSerial: u ? unitLabel(u, isDualSerialItem(selectedItem)) : undefined,
+        itemType: selectedItem.type, availStock: 1,
       }]);
     } else if (isSized) {
       if (availableVariants.length === 0)
@@ -202,7 +255,7 @@ export default function IssueReturn() {
         if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + n }; return c; }
         return [...prev, {
           id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel,
-          quantity: n, itemVariantId: Number(variantId), variantSize: selectedVariant?.size,
+          quantity: n, itemVariantId: Number(variantId), variantSize: selectedVariant?.size, itemType: selectedItem.type, availStock: selectedVariantAvail,
         }];
       });
     } else {
@@ -212,7 +265,7 @@ export default function IssueReturn() {
       setLines((prev) => {
         const idx = prev.findIndex((l) => l.itemId === selectedItem.id && !l.itemVariantId && !l.itemUnitId);
         if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + n }; return c; }
-        return [...prev, { id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel, quantity: n }];
+        return [...prev, { id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel, quantity: n, itemType: selectedItem.type, availStock: selectedItemAvail }];
       });
     }
     setLineErrors({});
@@ -223,6 +276,59 @@ export default function IssueReturn() {
     setLines((prev) => prev.filter((l) => l.id !== id));
     setLineErrors((prev) => { const c = { ...prev }; delete c[id]; return c; });
   }
+
+  // Apply a resolved serial/size selection to a kit-loaded cart line (#13/#14).
+  function resolveLine(id: string, patch: Partial<CartLine>) {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch, needsSelection: false } : l)));
+  }
+
+  // Change the quantity of a cart line (sized/consumable only).
+  function setLineQty(id: string, qty: number) {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, quantity: Math.max(1, qty) } : l)));
+  }
+
+  // Pre-formatted serial(s) for a line — "FP … / BP …" for dual-serial units.
+  const serialForLine = (l: CartLine): string | undefined => {
+    if (!l.unitSerial) return undefined;
+    const item = items?.find((i) => i.id === l.itemId);
+    if (item && isDualSerialItem(item) && l.unitSerial.includes(" / ") && !l.unitSerial.startsWith("FP ")) {
+      const [fp, bp] = l.unitSerial.split(" / ");
+      return `FP ${fp} / BP ${bp}`;
+    }
+    return l.unitSerial;
+  };
+
+  // Inline cart validation (#13/#14): unresolved kit lines, duplicate serials,
+  // and over-stock. The server 409 remains the all-or-nothing backstop.
+  const lineIssues = useMemo(() => {
+    const out: Record<string, string> = {};
+    const consumableByItem = new Map<number, number>();
+    const sizedByVariant = new Map<number, number>();
+    const unitLines = new Map<number, string[]>();
+    for (const l of lines) {
+      if (l.needsSelection) { out[l.id] = "Pick a serial/size to continue"; continue; }
+      if (l.itemUnitId) {
+        const arr = unitLines.get(l.itemUnitId) ?? []; arr.push(l.id); unitLines.set(l.itemUnitId, arr);
+      } else if (l.itemVariantId) {
+        sizedByVariant.set(l.itemVariantId, (sizedByVariant.get(l.itemVariantId) ?? 0) + l.quantity);
+      } else {
+        consumableByItem.set(l.itemId, (consumableByItem.get(l.itemId) ?? 0) + l.quantity);
+      }
+    }
+    for (const [itemId, qty] of Array.from(consumableByItem)) {
+      const item = items?.find((i) => i.id === itemId);
+      const avail = item ? item.onHand : 0;
+      if (qty > avail) for (const l of lines.filter((x) => x.itemId === itemId && !x.itemVariantId && !x.itemUnitId)) out[l.id] = `Only ${avail} in stock`;
+    }
+    for (const [variantId, qty] of Array.from(sizedByVariant)) {
+      const relevant = lines.filter((x) => x.itemVariantId === variantId);
+      const avail = relevant.find((r) => r.availStock != null)?.availStock ?? Infinity;
+      if (qty > avail) for (const l of relevant) out[l.id] = `Only ${avail} of that size in stock`;
+    }
+    for (const [, ids] of Array.from(unitLines)) if (ids.length > 1) for (const id of ids) out[id] = "Duplicate serial in cart";
+    return out;
+  }, [lines, items]);
+  const cartValid = lines.length > 0 && Object.keys(lineIssues).length === 0;
 
   // Map a 409 batch response ({ errors: [{ index, message }] }) back onto cart
   // rows by their 0-based position in the submitted lines array.
@@ -246,7 +352,8 @@ export default function IssueReturn() {
     try {
       await apiRequest("POST", "/api/issue/batch", {
         officerId: Number(officerId), signature, dueDate: dueDate || null,
-        notes: notes || undefined, issuedBy: user?.name,
+        notes: notes || undefined, issuedBy: issuedBy || user?.name,
+        issuedLocation: issuedLocation || undefined,
         lines: lines.map((l) => ({
           itemId: l.itemId, quantity: l.quantity,
           itemUnitId: l.itemUnitId ?? null, itemVariantId: l.itemVariantId ?? null,
@@ -259,6 +366,30 @@ export default function IssueReturn() {
       });
       const n = lines.length;
       const who = selectedOfficer ? `${selectedOfficer.firstName} ${selectedOfficer.lastName}` : "officer";
+      // Build the issue receipt from the cart before it is cleared (#2).
+      if (selectedOfficer) {
+        setIssueReceipt({
+          count: n,
+          timestamp: fmtDateTime(new Date().toISOString()),
+          officerName: `${selectedOfficer.firstName} ${selectedOfficer.lastName}`,
+          badgeNumber: selectedOfficer.badgeNumber,
+          issuedBy: issuedBy || user?.name || null,
+          issuedLocation: issuedLocation || null,
+          dueDate: dueDate ? fmtDate(dueDate) : null,
+          signature: signature || null,
+          lines: lines.map((l) => {
+            const item = items?.find((i) => i.id === l.itemId);
+            return {
+              itemName: l.itemName,
+              category: l.categoryLabel,
+              sizeOrVariant: l.variantSize ?? null,
+              serials: serialForLine(l) ?? null,
+              quantity: l.quantity,
+              condition: item?.condition ?? null,
+            };
+          }),
+        });
+      }
       toast({ title: `Issued ${n} item${n === 1 ? "" : "s"} to ${who}` });
       setLines([]); setLineErrors({}); setSignature(""); setNotes(""); setDueDate("");
       resetItemPickers();
@@ -280,8 +411,38 @@ export default function IssueReturn() {
   async function doReturn() {
     if (!returnFor) return;
     setReturning(true);
+    const a = returnFor;
     try {
-      await apiRequest("POST", `/api/return/${returnFor.id}`, { conditionIn, returnedBy: user?.name, notes: returnNote });
+      await apiRequest("POST", `/api/return/${a.id}`, { conditionIn, returnedBy: user?.name, notes: returnNote });
+      // Resolve the officer + serial(s) for the return receipt (#2) before the
+      // assignment leaves the active list.
+      const item = items?.find((i) => i.id === a.itemId);
+      const officer = officers?.find((o) => o.id === a.officerId);
+      let serials: string | null = null;
+      if (a.itemUnitId && item) {
+        try {
+          const units = (await (await apiRequest("GET", `/api/items/${a.itemId}/units`)).json()) as ItemUnit[];
+          const u = units.find((x) => x.id === a.itemUnitId);
+          if (u) serials = unitLabel(u, isDualSerialItem(item));
+        } catch { /* serial is best-effort */ }
+      }
+      const itemLabel = `${item?.name ?? itemName(a.itemId)}${(a as any).variantSize ? ` · ${(a as any).variantSize}` : ""}`;
+      setReturnReceipt({
+        itemLabel,
+        timestamp: fmtDateTime(new Date().toISOString()),
+        officerName: officer ? `${officer.firstName} ${officer.lastName}` : "Officer",
+        badgeNumber: officer?.badgeNumber ?? String(a.officerId),
+        returnedBy: user?.name ?? null,
+        conditionIn,
+        lines: [{
+          itemName: item?.name ?? itemName(a.itemId),
+          category: item?.category ?? null,
+          sizeOrVariant: (a as any).variantSize ?? null,
+          serials,
+          quantity: a.quantity,
+          condition: conditionIn,
+        }],
+      });
       invalidateAll();
       toast({ title: "Item returned" });
       setReturnFor(null); setReturnNote(""); setConditionIn("Good");
@@ -370,7 +531,7 @@ export default function IssueReturn() {
                     <Select value={unitId} onValueChange={setUnitId}>
                       <SelectTrigger data-testid="select-unit"><SelectValue placeholder="Select serial to issue…" /></SelectTrigger>
                       <SelectContent>
-                        {inStockUnits.map((u) => <SelectItem key={u.id} value={String(u.id)}>{unitLabel(u)}</SelectItem>)}
+                        {inStockUnits.map((u) => <SelectItem key={u.id} value={String(u.id)}>{unitLabel(u, isDualSerialItem(selectedItem!))}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   )}
@@ -427,21 +588,35 @@ export default function IssueReturn() {
             ) : (
               <ul className="divide-y divide-border rounded-md border border-border">
                 {lines.map((l) => {
-                  const err = lineErrors[l.id];
+                  const err = lineErrors[l.id] || lineIssues[l.id];
                   return (
-                    <li key={l.id} className={`px-3 py-2.5 ${err ? "border-l-2 border-l-destructive bg-destructive/5" : ""}`} data-testid={`row-cart-${l.id}`}>
+                    <li key={l.id} className={`px-3 py-2.5 ${err ? "border-l-2 border-l-destructive bg-destructive/5" : l.needsSelection ? "border-l-2 border-l-chart-3 bg-chart-3/5" : ""}`} data-testid={`row-cart-${l.id}`}>
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium">
                             {l.quantity}× {l.itemName}
                             {l.unitSerial ? ` · ${l.unitSerial}` : l.variantSize ? ` · ${l.variantSize}` : ""}
                           </p>
-                          <p className="text-xs text-muted-foreground">{l.categoryLabel}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {l.categoryLabel}{l.fromKit ? " · from kit" : ""}
+                          </p>
                         </div>
-                        <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => removeFromCart(l.id)} data-testid={`button-remove-cart-${l.id}`}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {(l.itemType === "sized" || l.itemType === "consumable") && !l.needsSelection && (
+                            <Input
+                              type="number" min={1}
+                              className="h-7 w-16"
+                              value={l.quantity}
+                              onChange={(e) => setLineQty(l.id, Number(e.target.value))}
+                              data-testid={`input-cart-qty-${l.id}`}
+                            />
+                          )}
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => removeFromCart(l.id)} data-testid={`button-remove-cart-${l.id}`}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
+                      {l.needsSelection && <CartLineResolver line={l} onResolve={resolveLine} />}
                       {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
                     </li>
                   );
@@ -450,6 +625,14 @@ export default function IssueReturn() {
             )}
 
             <div className="mt-4 space-y-4">
+              <div className="space-y-1.5">
+                <Label>Issued by (optional)</Label>
+                <Input placeholder="Who is issuing these items" value={issuedBy} onChange={(e) => setIssuedBy(e.target.value)} data-testid="input-issued-by" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Issued location (optional)</Label>
+                <Input placeholder="Given in person, locker #, front desk…" value={issuedLocation} onChange={(e) => setIssuedLocation(e.target.value)} data-testid="input-issued-location" />
+              </div>
               <div className="space-y-1.5">
                 <Label>Due date (optional)</Label>
                 <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="input-due-date" />
@@ -462,7 +645,7 @@ export default function IssueReturn() {
                 <Label>Notes (optional)</Label>
                 <Textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </div>
-              <Button className="w-full" onClick={issueCart} disabled={issuing || lines.length === 0} data-testid="button-issue-cart">
+              <Button className="w-full" onClick={issueCart} disabled={issuing || !cartValid} data-testid="button-issue-cart">
                 <PackageCheck className="mr-1.5 h-4 w-4" /> {issuing ? "Issuing…" : `Issue Cart (${lines.length} item${lines.length === 1 ? "" : "s"})`}
               </Button>
             </div>
@@ -559,6 +742,102 @@ export default function IssueReturn() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Issue confirmation + receipt (#2) */}
+      <Dialog open={!!issueReceipt} onOpenChange={(o) => !o && setIssueReceipt(null)}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-issue-receipt">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><PackageCheck className="h-5 w-5 text-primary" /> Issue complete</DialogTitle>
+            <DialogDescription>
+              {issueReceipt && `${issueReceipt.count} item${issueReceipt.count === 1 ? "" : "s"} issued to ${issueReceipt.officerName} (#${issueReceipt.badgeNumber}).`}
+            </DialogDescription>
+          </DialogHeader>
+          {issueReceipt && (
+            <ul className="max-h-52 space-y-1 overflow-y-auto rounded-md border border-border p-3 text-sm">
+              {issueReceipt.lines.map((l, i) => (
+                <li key={i} className="flex justify-between gap-2">
+                  <span className="min-w-0 truncate">{l.quantity}× {l.itemName}{l.sizeOrVariant ? ` · ${l.sizeOrVariant}` : ""}{l.serials ? ` · ${l.serials}` : ""}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIssueReceipt(null)}>Close</Button>
+            <Button onClick={() => issueReceipt && downloadIssueReceipt(issueReceipt)} data-testid="button-download-issue-receipt">Download Receipt (PDF)</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Return confirmation + receipt (#2) */}
+      <Dialog open={!!returnReceipt} onOpenChange={(o) => !o && setReturnReceipt(null)}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-return-receipt">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><ArrowDownLeft className="h-5 w-5 text-primary" /> Return complete</DialogTitle>
+            <DialogDescription>
+              {returnReceipt && `${returnReceipt.itemLabel} returned from ${returnReceipt.officerName} (#${returnReceipt.badgeNumber}) — condition ${returnReceipt.conditionIn}.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReturnReceipt(null)}>Close</Button>
+            <Button onClick={() => returnReceipt && downloadReturnReceipt(returnReceipt)} data-testid="button-download-return-receipt">Download Receipt (PDF)</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Inline serial/size picker for kit-loaded cart lines that need resolution
+// before the cart can be issued (#13/#14).
+function CartLineResolver({ line, onResolve }: { line: CartLine; onResolve: (id: string, patch: Partial<CartLine>) => void }) {
+  const isUnique = line.itemType === "unique";
+  const { data: units } = useQuery<ItemUnit[]>({ queryKey: ["/api/items", line.itemId, "units"], enabled: isUnique });
+  const { data: variants } = useQuery<ItemVariant[]>({ queryKey: ["/api/items", line.itemId, "variants"], enabled: !isUnique });
+  const { data: items } = useQuery<ItemWithStock[]>({ queryKey: ["/api/items"] });
+  const item = items?.find((i) => i.id === line.itemId);
+  const dual = item ? isDualSerialItem(item) : false;
+  const inStock = (units ?? []).filter((u) => u.status === "in_stock");
+  const inStockVariants = (variants ?? []).filter((v) => v.quantity > 0);
+
+  if (isUnique) {
+    return (
+      <div className="mt-2">
+        {inStock.length === 0 ? (
+          <p className="text-xs text-destructive">No serial in stock</p>
+        ) : (
+          <Select onValueChange={(v) => {
+            const u = inStock.find((x) => String(x.id) === v);
+            if (u) onResolve(line.id, {
+              itemUnitId: u.id,
+              unitSerial: dual && u.secondarySerialNumber ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}` : u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber,
+              availStock: 1,
+            });
+          }}>
+            <SelectTrigger className="h-8" data-testid={`select-resolve-serial-${line.id}`}><SelectValue placeholder="Pick a serial…" /></SelectTrigger>
+            <SelectContent>
+              {inStock.map((u) => <SelectItem key={u.id} value={String(u.id)}>{dual && u.secondarySerialNumber ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}` : u.serialNumber}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2">
+      {inStockVariants.length === 0 ? (
+        <p className="text-xs text-destructive">No size in stock</p>
+      ) : (
+        <Select onValueChange={(v) => {
+          const va = inStockVariants.find((x) => String(x.id) === v);
+          if (va) onResolve(line.id, { itemVariantId: va.id, variantSize: va.size, availStock: va.quantity });
+        }}>
+          <SelectTrigger className="h-8" data-testid={`select-resolve-size-${line.id}`}><SelectValue placeholder="Pick a size…" /></SelectTrigger>
+          <SelectContent>
+            {inStockVariants.map((v) => <SelectItem key={v.id} value={String(v.id)}>{v.size} — {v.quantity} avail</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
     </div>
   );
 }
