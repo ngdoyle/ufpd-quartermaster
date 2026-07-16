@@ -107,6 +107,7 @@ export const can = {
   viewReports: (r?: Role) => r === "admin" || r === "quartermaster" || r === "supervisor" || r === "auditor",
   viewAudit: (r?: Role) => r === "admin" || r === "auditor" || r === "supervisor",
   viewCompliance: (r?: Role) => r === "admin" || r === "auditor" || r === "supervisor",
+  email: (r?: Role) => r === "admin" || r === "quartermaster",
 };
 
 export const roleLabel: Record<Role, string> = {

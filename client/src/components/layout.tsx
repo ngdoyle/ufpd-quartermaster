@@ -9,9 +9,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   LayoutDashboard, Package, Users, ArrowLeftRight, Boxes,
-  FileBarChart, ScanLine, ShieldCheck, Sun, Moon, LogOut, Menu, KeyRound, ScrollText, FileCheck2,
+  FileBarChart, ScanLine, ShieldCheck, Sun, Moon, LogOut, Menu, KeyRound, ScrollText, FileCheck2, Mail,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import badgeUrl from "@/assets/badge.png";
 
 export function Logo({ className }: { className?: string }) {
   return (
@@ -37,6 +38,7 @@ const NAV: NavItem[] = [
   { href: "/scan", label: "Scan", icon: ScanLine, show: () => true },
   { href: "/reports", label: "Reports", icon: FileBarChart, show: (r) => can.viewReports(r) },
   { href: "/audit", label: "Activity Log", icon: ScrollText, show: (r) => can.viewAudit(r) },
+  { href: "/email", label: "Email", icon: Mail, show: (r) => can.email(r) },
   { href: "/users", label: "User Accounts", icon: ShieldCheck, show: (r) => can.manageUsers(r) },
   { href: "/compliance", label: "Compliance", icon: FileCheck2, show: (r) => can.viewCompliance(r) },
 ];
@@ -74,9 +76,9 @@ function SidebarInner() {
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       <div className="flex items-center gap-2.5 px-5 py-5">
-        <Logo className="h-8 w-8 text-sidebar-primary" />
+        <img src={badgeUrl} alt="UFPD Quartermaster badge" className="h-9 w-auto" />
         <div className="leading-tight">
-          <div className="text-[15px] font-bold tracking-tight text-white">Quartermaster</div>
+          <div className="text-[15px] font-bold tracking-tight text-white">UFPD Quartermaster</div>
           <div className="text-[11px] text-sidebar-foreground/55">Asset & Issue Management</div>
         </div>
       </div>

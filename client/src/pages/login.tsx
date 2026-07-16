@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp } from "@/lib/app-context";
 import { apiRequest, errorMessage, setAuthToken } from "@/lib/queryClient";
-import { Logo } from "@/components/layout";
+import badgeUrl from "@/assets/badge.png";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,8 +37,8 @@ export default function Login() {
     <div className="flex min-h-[100dvh] items-center justify-center bg-sidebar p-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center text-center">
-          <Logo className="h-14 w-14 text-sidebar-primary" />
-          <h1 className="mt-4 text-xl font-bold tracking-tight text-white">Quartermaster</h1>
+          <img src={badgeUrl} alt="UFPD Quartermaster badge" className="h-28 w-auto" />
+          <h1 className="mt-4 text-xl font-bold tracking-tight text-white">UFPD Quartermaster</h1>
           <p className="mt-1 text-sm text-sidebar-foreground/55">Asset, Inventory & Issue Management</p>
         </div>
         <Card className="p-6">
