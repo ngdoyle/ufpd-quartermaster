@@ -100,6 +100,8 @@ export default function IssueReturn() {
   const [lineErrors, setLineErrors] = useState<Record<string, string>>({});
   // officer to switch to, pending confirmation while the cart is non-empty
   const [pendingOfficer, setPendingOfficer] = useState<string | null>(null);
+  // second-step confirmation when the user chooses to clear the cart (#11)
+  const [confirmClearCart, setConfirmClearCart] = useState(false);
   // QR scan-to-cart dialog (#9)
   const [scanOpen, setScanOpen] = useState(false);
   // Email issuance receipt to the officer (#18) — only when they have an email.
@@ -821,23 +823,55 @@ export default function IssueReturn() {
         description="Scan an item QR code or a serialized unit to add it to the current cart. Keep scanning to add more."
       />
 
-      {/* Officer switch confirm — a cart belongs to one officer */}
-      <AlertDialog open={pendingOfficer !== null} onOpenChange={(o) => !o && setPendingOfficer(null)}>
+      {/* Officer change — keep the cart (reassign) or clear it (#11) */}
+      <AlertDialog open={pendingOfficer !== null && !confirmClearCart} onOpenChange={(o) => !o && setPendingOfficer(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Switch officers?</AlertDialogTitle>
-            <AlertDialogDescription>Switching officers clears the cart. The {lines.length} item{lines.length === 1 ? "" : "s"} you added will be removed.</AlertDialogDescription>
+            <AlertDialogTitle>Change recipient?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This cart has {lines.length} item{lines.length === 1 ? "" : "s"}. Keep them and reassign to the new recipient, or clear the cart and start over?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:justify-between">
+            <AlertDialogCancel onClick={() => setPendingOfficer(null)}>Cancel</AlertDialogCancel>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button
+                variant="outline"
+                data-testid="button-clear-cart-officer"
+                onClick={() => setConfirmClearCart(true)}
+              >Clear cart</Button>
+              <AlertDialogAction
+                data-testid="button-keep-cart-officer"
+                onClick={() => {
+                  if (pendingOfficer !== null) setOfficerId(pendingOfficer);
+                  setPendingOfficer(null);
+                }}
+              >Keep &amp; reassign</AlertDialogAction>
+            </div>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Second-step confirmation before actually discarding the cart (#11) */}
+      <AlertDialog open={confirmClearCart} onOpenChange={(o) => { if (!o) setConfirmClearCart(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear the cart?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The {lines.length} item{lines.length === 1 ? "" : "s"} you added will be removed and the cart reassigned to the new recipient. This can't be undone.
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setPendingOfficer(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel onClick={() => setConfirmClearCart(false)}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              data-testid="button-confirm-officer-switch"
+              data-testid="button-confirm-clear-cart"
               onClick={() => {
                 if (pendingOfficer !== null) setOfficerId(pendingOfficer);
                 setLines([]); setLineErrors({}); resetItemPickers();
+                setConfirmClearCart(false);
                 setPendingOfficer(null);
               }}
-            >Switch &amp; clear cart</AlertDialogAction>
+            >Clear cart</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
