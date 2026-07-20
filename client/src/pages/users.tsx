@@ -40,13 +40,16 @@ export default function Users() {
   const { toast } = useToast();
   const { data: users, isLoading } = useQuery<any[]>({ queryKey: ["/api/users"] });
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ username: "", name: "", role: "officer" as Role, password: "", mustChangePassword: true });
+  const [form, setForm] = useState({ username: "", name: "", role: "officer" as Role, password: "", email: "", mustChangePassword: true });
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState({ username: "", name: "", role: "officer" as Role, password: "" });
+  const [editForm, setEditForm] = useState({ username: "", name: "", role: "officer" as Role, email: "" });
+  const [resettingId, setResettingId] = useState<number | null>(null);
+
+  const isAdmin = can.manageUsers(user?.role);
 
   function openEdit(u: any) {
-    setEditForm({ username: u.username, name: u.name, role: u.role as Role, password: "" });
+    setEditForm({ username: u.username, name: u.name, role: u.role as Role, email: u.email ?? "" });
     setEditing(u);
   }
 
@@ -55,8 +58,7 @@ export default function Users() {
     if (!editForm.username || !editForm.name) return toast({ title: "Name and username required", variant: "destructive" });
     setSaving(true);
     try {
-      const patch: any = { username: editForm.username, name: editForm.name, role: editForm.role, actor: user?.name };
-      if (editForm.password) patch.password = editForm.password;
+      const patch: any = { username: editForm.username, name: editForm.name, role: editForm.role, email: editForm.email.trim() || null, actor: user?.name };
       await apiRequest("PATCH", `/api/users/${editing.id}`, patch);
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       toast({ title: "Account updated" });
@@ -138,6 +140,7 @@ export default function Users() {
           <div className="grid gap-3">
             <div className="space-y-1.5"><Label>Full name</Label><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-user-name" /></div>
             <div className="space-y-1.5"><Label>Username</Label><Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} data-testid="input-user-username" /></div>
+            <div className="space-y-1.5"><Label>Email <span className="text-muted-foreground">(optional)</span></Label><Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="input-user-email" /></div>
             <div className="space-y-1.5"><Label>Temporary password</Label><Input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} data-testid="input-user-password" /></div>
             <div className="space-y-1.5">
               <Label>Role</Label>
@@ -160,11 +163,11 @@ export default function Users() {
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent className="sm:max-w-md">
-          <DialogHeader><DialogTitle>Edit Account</DialogTitle><DialogDescription>Change username, role, or reset the password. Leave password blank to keep it unchanged.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>Edit Account</DialogTitle><DialogDescription>Change name, username, email, or role. Use “Reset Password” to email the user a new temporary password.</DialogDescription></DialogHeader>
           <div className="grid gap-3">
             <div className="space-y-1.5"><Label>Full name</Label><Input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} data-testid="input-edit-user-name" /></div>
             <div className="space-y-1.5"><Label>Username</Label><Input value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} data-testid="input-edit-user-username" /></div>
-            <div className="space-y-1.5"><Label>New password <span className="text-muted-foreground">(optional)</span></Label><Input type="password" value={editForm.password} placeholder="Leave blank to keep current" onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} data-testid="input-edit-user-password" /></div>
+            <div className="space-y-1.5"><Label>Email <span className="text-muted-foreground">(optional)</span></Label><Input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} data-testid="input-edit-user-email" /></div>
             <div className="space-y-1.5">
               <Label>Role</Label>
               <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v as Role })}>

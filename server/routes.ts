@@ -281,6 +281,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/users", adminGuard, async (req, res) => {
     try {
       const data = insertUserSchema.parse(req.body);
+      if (data.email && !isValidEmail(data.email)) return res.status(400).json({ message: "Enter a valid email address." });
       const existing = await storage.getUserByUsername(data.username);
       if (existing) return res.status(400).json({ message: "Username already exists." });
       // Hash the password before persisting (never store plaintext).
@@ -290,10 +291,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { handleErr(e, res); }
   });
   app.patch("/api/users/:id", adminGuard, async (req, res) => {
-    // If a password is being set/reset here, hash it before persisting.
-    const { actor, ...patch } = req.body ?? {};
-    const pwChanged = !!patch.password;
-    if (patch.password) patch.password = hashPassword(patch.password);
+    // Admins never set passwords directly — password changes go through the
+    // self-service change-password flow or the admin "Reset Password" endpoint.
+    // Silently drop any password field so it can't be set here.
+    const { actor, password: _ignored, ...patch } = req.body ?? {};
+    if (patch.email !== undefined && patch.email !== null && patch.email !== "" && !isValidEmail(patch.email))
+      return res.status(400).json({ message: "Enter a valid email address." });
     const before = await storage.getUser(Number(req.params.id));
     if (!before) return res.status(404).json({ message: "Not found" });
     // Guard: don't allow the last remaining admin to be demoted or disabled.
@@ -306,8 +309,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const u = await storage.updateUser(Number(req.params.id), patch);
     if (!u) return res.status(404).json({ message: "Not found" });
     const diff = diffDetail(before, u, patch, ["password"]);
-    const changes = [diff, pwChanged ? "password changed" : ""].filter(Boolean).join(", ");
-    await audit("update_user", "user", u.id, `Updated account ${u.username}${changes ? ` — ${changes}` : ""}`, actor);
+    await audit("update_user", "user", u.id, `Updated account ${u.username}${diff ? ` — ${diff}` : ""}`, actor);
     res.json(stripPw(u));
   });
   app.delete("/api/users/:id", adminGuard, async (req, res) => {

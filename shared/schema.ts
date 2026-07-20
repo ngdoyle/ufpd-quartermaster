@@ -12,6 +12,8 @@ export const users = sqliteTable("users", {
   password: text("password").notNull(),
   name: text("name").notNull(),
   role: text("role").notNull().default("officer"),
+  // optional contact email — used for admin password resets (Batch 5)
+  email: text("email"),
   // optional link to a personnel record (for officer self-service)
   officerId: integer("officer_id"),
   mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(false),
