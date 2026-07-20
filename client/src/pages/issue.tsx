@@ -58,7 +58,7 @@ type CartLine = {
 
 // Kit → cart handoff. The Kits page stashes the chosen kit's lines here and
 // navigates to /issue, which drains it on mount (#13/#14).
-export type KitCartPayload = { kitName: string; lines: { itemId: number; quantity: number }[] };
+export type KitCartPayload = { kitName: string; officerId?: number; lines: { itemId: number; quantity: number }[] };
 // In-memory kit→cart handoff. SPA navigation (wouter) never reloads the page, so a
 // module variable is sufficient — and unlike sessionStorage it can't throw inside
 // the sandboxed preview iframe.
@@ -228,6 +228,9 @@ export default function IssueReturn() {
       }
       if (newLines.length) {
         setLines(newLines);
+        // #5: the kit dialog chose the recipient up front — preselect it here so
+        // the cart is already scoped to that officer.
+        if (payload.officerId) setOfficerId(String(payload.officerId));
         toast({ title: `Loaded kit "${payload.kitName}" into cart`, description: "Pick a serial/size for each highlighted line, then issue." });
       }
     } catch { /* ignore malformed handoff */ }

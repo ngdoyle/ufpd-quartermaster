@@ -38,19 +38,33 @@ export default function Kits() {
   const [saving, setSaving] = useState(false);
   const canManage = can.issueReturn(user?.role);
 
+  // #5: choose the recipient before the kit's items go into the cart.
+  const [pendingKit, setPendingKit] = useState<KitWithItems | null>(null);
+  const [kitOfficerId, setKitOfficerId] = useState("");
+
   const [, navigate] = useLocation();
 
   const itemName = (id: number) => items?.find((i) => i.id === id)?.name ?? `Item #${id}`;
+  const isBiz = (o: { type?: string | null }) => (o.type ?? "person") === "business";
 
   // Load a kit's lines into the Issue-page cart and navigate there (#13/#14).
-  // Serial/size resolution and all-or-nothing validation happen in the cart.
-  function loadKitToCart(k: KitWithItems) {
+  // The recipient is chosen up front (#5); serial/size resolution and
+  // all-or-nothing validation still happen in the cart.
+  function loadKitToCart(k: KitWithItems, officerId?: string) {
     const payload: KitCartPayload = {
       kitName: k.name,
+      officerId: officerId ? Number(officerId) : undefined,
       lines: k.items.map((l) => ({ itemId: l.itemId, quantity: l.quantity })),
     };
     setKitCart(payload);
     navigate("/issue");
+  }
+
+  function confirmKitRecipient() {
+    if (!pendingKit || !kitOfficerId) return;
+    loadKitToCart(pendingKit, kitOfficerId);
+    setPendingKit(null);
+    setKitOfficerId("");
   }
 
   function resetKitForm() { setName(""); setDesc(""); setLines([{ itemId: "", quantity: 1 }]); setEditingId(null); }
@@ -126,13 +140,42 @@ export default function Kits() {
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {k.items.map((l) => <Pill key={l.id} tone="gray">{l.quantity}× {itemName(l.itemId)}</Pill>)}
               </div>
-              <Button className="mt-4" variant="outline" onClick={() => loadKitToCart(k)} disabled={!canManage} data-testid={`button-issue-kit-${k.id}`}>
+              <Button className="mt-4" variant="outline" onClick={() => { setPendingKit(k); setKitOfficerId(""); }} disabled={!canManage} data-testid={`button-issue-kit-${k.id}`}>
                 <Send className="mr-1.5 h-4 w-4" /> Issue to Officer
               </Button>
             </Card>
           ))}
         </div>
       )}
+
+      {/* #5: pick the recipient before adding the kit to the cart */}
+      <Dialog open={pendingKit !== null} onOpenChange={(o) => { if (!o) { setPendingKit(null); setKitOfficerId(""); } }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Issue "{pendingKit?.name}"</DialogTitle>
+            <DialogDescription>Choose who these items are for. They'll be added to the cart, ready to issue.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label>Issue To</Label>
+            <Select value={kitOfficerId} onValueChange={setKitOfficerId}>
+              <SelectTrigger data-testid="select-kit-officer"><SelectValue placeholder="Select recipient…" /></SelectTrigger>
+              <SelectContent>
+                {officers?.filter((o) => o.status === "active").map((o) => (
+                  <SelectItem key={o.id} value={String(o.id)}>
+                    {isBiz(o) ? `${o.firstName} (Business)` : `${o.lastName}, ${o.firstName} · #${o.badgeNumber}`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setPendingKit(null); setKitOfficerId(""); }}>Cancel</Button>
+            <Button onClick={confirmKitRecipient} disabled={!kitOfficerId} data-testid="button-confirm-kit-recipient">
+              <Send className="mr-1.5 h-4 w-4" /> Add to Cart
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Create kit dialog */}
       <Dialog open={creating} onOpenChange={onCreateOpenChange}>
