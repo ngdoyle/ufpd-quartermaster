@@ -54,6 +54,9 @@ type CartLine = {
   fromKit?: boolean;
   // Available stock captured at resolve time, for inline over-stock checks.
   availStock?: number;
+  // #9: condition to record/apply at issuance, defaulting to the unit's (unique)
+  // or item's (sized/consumable) current condition. Editable per cart line.
+  condition?: string;
 };
 
 // Kit → cart handoff. The Kits page stashes the chosen kit's lines here and
@@ -229,6 +232,7 @@ export default function IssueReturn() {
           id: crypto.randomUUID(), itemId: item.id, itemName: item.name,
           categoryLabel: item.category || "Uncategorized", quantity: kl.quantity,
           itemType: item.type, needsSelection, fromKit: true,
+          condition: normalizeCondition(item.condition ?? "NEW"),
         });
       }
       if (newLines.length) {
@@ -275,6 +279,7 @@ export default function IssueReturn() {
         id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel,
         quantity: 1, itemUnitId: Number(unitId), unitSerial: u ? unitLabel(u, isDualSerialItem(selectedItem)) : undefined,
         itemType: selectedItem.type, availStock: 1,
+        condition: normalizeCondition(u?.condition ?? selectedItem.condition ?? "NEW"),
       }]);
     } else if (isSized) {
       if (availableVariants.length === 0)
@@ -289,6 +294,7 @@ export default function IssueReturn() {
         return [...prev, {
           id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel,
           quantity: n, itemVariantId: Number(variantId), variantSize: selectedVariant?.size, itemType: selectedItem.type, availStock: selectedVariantAvail,
+          condition: normalizeCondition(selectedItem.condition ?? "NEW"),
         }];
       });
     } else {
@@ -298,7 +304,7 @@ export default function IssueReturn() {
       setLines((prev) => {
         const idx = prev.findIndex((l) => l.itemId === selectedItem.id && !l.itemVariantId && !l.itemUnitId);
         if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + n }; return c; }
-        return [...prev, { id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel, quantity: n, itemType: selectedItem.type, availStock: selectedItemAvail }];
+        return [...prev, { id: crypto.randomUUID(), itemId: selectedItem.id, itemName: selectedItem.name, categoryLabel, quantity: n, itemType: selectedItem.type, availStock: selectedItemAvail, condition: normalizeCondition(selectedItem.condition ?? "NEW") }];
       });
     }
     setLineErrors({});
@@ -316,6 +322,7 @@ export default function IssueReturn() {
     setLines((prev) => [...prev, {
       id: crypto.randomUUID(), itemId: item.id, itemName: item.name, categoryLabel: item.category || "Uncategorized",
       quantity: 1, itemUnitId: unit.id, unitSerial: label, itemType: item.type, availStock: 1,
+      condition: normalizeCondition(unit.condition ?? item.condition ?? "NEW"),
     }]);
     setLineErrors({});
     toast({ title: "Added to cart", description: `${item.name} · ${label}` });
@@ -341,7 +348,7 @@ export default function IssueReturn() {
     setLines((prev) => {
       const idx = prev.findIndex((l) => l.itemId === item.id && !l.itemVariantId && !l.itemUnitId);
       if (idx >= 0) { const c = [...prev]; c[idx] = { ...c[idx], quantity: c[idx].quantity + 1 }; return c; }
-      return [...prev, { id: crypto.randomUUID(), itemId: item.id, itemName: item.name, categoryLabel: item.category || "Uncategorized", quantity: 1, itemType: item.type, availStock: avail }];
+      return [...prev, { id: crypto.randomUUID(), itemId: item.id, itemName: item.name, categoryLabel: item.category || "Uncategorized", quantity: 1, itemType: item.type, availStock: avail, condition: normalizeCondition(item.condition ?? "NEW") }];
     });
     setLineErrors({});
     toast({ title: "Added to cart", description: item.name });
@@ -389,6 +396,11 @@ export default function IssueReturn() {
   // Change the quantity of a cart line (sized/consumable only).
   function setLineQty(id: string, qty: number) {
     setLines((prev) => prev.map((l) => (l.id === id ? { ...l, quantity: Math.max(1, qty) } : l)));
+  }
+
+  // Change the condition recorded/applied for a cart line at issuance (#9).
+  function setLineCondition(id: string, condition: string) {
+    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, condition } : l)));
   }
 
   // Pre-formatted serial(s) for a line — "FP … / BP …" for dual-serial units.
@@ -473,6 +485,7 @@ export default function IssueReturn() {
         lines: lines.map((l) => ({
           itemId: l.itemId, quantity: l.quantity,
           itemUnitId: l.itemUnitId ?? null, itemVariantId: l.itemVariantId ?? null,
+          conditionOut: l.condition ?? null,
         })),
       });
       invalidateAll();
@@ -502,7 +515,7 @@ export default function IssueReturn() {
               sizeOrVariant: l.variantSize ?? null,
               serials: serialForLine(l) ?? null,
               quantity: l.quantity,
-              condition: item?.condition ?? null,
+              condition: l.condition ?? item?.condition ?? null,
             };
           }),
         });
@@ -746,6 +759,15 @@ export default function IssueReturn() {
                         </div>
                       </div>
                       {l.needsSelection && <CartLineResolver line={l} onResolve={resolveLine} />}
+                      {!l.needsSelection && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">Condition</span>
+                          <Select value={l.condition ?? "NEW"} onValueChange={(v) => setLineCondition(l.id, v)}>
+                            <SelectTrigger className="h-7 w-40" data-testid={`select-cart-condition-${l.id}`}><SelectValue /></SelectTrigger>
+                            <SelectContent>{CONDITIONS.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                          </Select>
+                        </div>
+                      )}
                       {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
                     </li>
                   );
@@ -994,6 +1016,7 @@ function CartLineResolver({ line, onResolve }: { line: CartLine; onResolve: (id:
               itemUnitId: u.id,
               unitSerial: dual && u.secondarySerialNumber ? `FP ${u.serialNumber} / BP ${u.secondarySerialNumber}` : u.secondarySerialNumber ? `${u.serialNumber} / ${u.secondarySerialNumber}` : u.serialNumber,
               availStock: 1,
+              condition: normalizeCondition(u.condition ?? "NEW"),
             });
           }}>
             <SelectTrigger className="h-8" data-testid={`select-resolve-serial-${line.id}`}><SelectValue placeholder="Pick a serial…" /></SelectTrigger>

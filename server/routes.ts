@@ -142,7 +142,7 @@ function recipientLabel(o: { type?: string | null; firstName: string; lastName?:
   return `${o.firstName} ${o.lastName ?? ""} (#${o.badgeNumber ?? ""})`;
 }
 
-type IssueLineInput = { itemId: number; quantity: number; itemUnitId?: number | null; itemVariantId?: number | null };
+type IssueLineInput = { itemId: number; quantity: number; itemUnitId?: number | null; itemVariantId?: number | null; conditionOut?: string | null };
 type IssueOpts = { dueDate?: string | null; signature?: string; notes?: string; conditionOut?: string; issuedBy?: string; issuedLocation?: string };
 type PlanLineError = { index: number; message: string; code: number };
 type IssuePlanResult =
@@ -160,6 +160,9 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
   const errors: PlanLineError[] = [];
   const assignments: InsertAssignment[] = [];
   const auditDetails: string[] = [];
+  // #9: per-line condition changes to push onto serialized units after the batch
+  // (the issue_batch RPC only sets status/assignedOfficerId, never condition).
+  const unitConditionUpdates: { id: number; condition: string }[] = [];
 
   const itemCache = new Map<number, Awaited<ReturnType<typeof storage.getItem>>>();
   const unitsCache = new Map<number, Awaited<ReturnType<typeof storage.listUnitsByItem>>>();
@@ -187,11 +190,15 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
     const fail = (message: string, code: number) => errors.push({ index: i, message, code });
     const item = await getItemCached(line.itemId);
     if (!item) { fail("Item not found.", 404); continue; }
+    if (line.conditionOut != null && line.conditionOut !== "" && !isValidCondition(normalizeCondition(line.conditionOut))) {
+      fail(conditionError, 400); continue;
+    }
 
     let itemUnitId: number | null = null;
     let itemVariantId: number | null = null;
     let sizeSuffix = "";
     let serialInfo = "";
+    let resolvedUnit: Awaited<ReturnType<typeof storage.getUnit>> | null = null;
 
     if (item.type === "sized") {
       const variant = line.itemVariantId ? await getVariantCached(line.itemVariantId) : undefined;
@@ -211,6 +218,7 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
         if (usedUnitIds.has(unit.id)) { fail("That unit is already selected on another line.", 409); continue; }
         usedUnitIds.add(unit.id);
         itemUnitId = unit.id;
+        resolvedUnit = unit;
         serialInfo = item.requiresDualSerial && unit.secondarySerialNumber
           ? ` [FP ${unit.serialNumber} / BP ${unit.secondarySerialNumber}]`
           : ` [serial ${unit.serialNumber}]`;
@@ -229,10 +237,23 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
       itemRemaining.set(item.id, remaining - line.quantity);
     }
 
+    // #9: condition chosen per cart line, defaulting to the unit's/item's current
+    // condition. When it differs from a serialized unit's stored condition, queue a
+    // post-batch update (issue_batch never touches condition) and note it in the audit.
+    const lineCondition = normalizeCondition(line.conditionOut ?? opts.conditionOut ?? resolvedUnit?.condition ?? item.condition ?? "NEW");
+    let condChanged = false;
+    if (resolvedUnit) {
+      const current = normalizeCondition(resolvedUnit.condition ?? "NEW");
+      if (current !== lineCondition) {
+        unitConditionUpdates.push({ id: resolvedUnit.id, condition: lineCondition });
+        condChanged = true;
+      }
+    }
+
     assignments.push({
       itemId: item.id, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any,
       officerId: officer.id, quantity: line.quantity, status: "active",
-      conditionOut: normalizeCondition(opts.conditionOut ?? item.condition ?? "NEW"), conditionIn: null as any,
+      conditionOut: lineCondition, conditionIn: null as any,
       issuedAt: nowISO(), dueDate: opts.dueDate ?? null as any, returnedAt: null as any,
       issuedBy: opts.issuedBy ?? null as any, issuedLocation: opts.issuedLocation ?? null as any,
       returnedBy: null as any,
@@ -240,7 +261,8 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
     });
     const byPart = opts.issuedBy ? `, by ${opts.issuedBy}` : "";
     const locPart = opts.issuedLocation ? `, at ${opts.issuedLocation}` : "";
-    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix}${serialInfo} to ${recipientLabel(officer)}${byPart}${locPart}`);
+    const condPart = condChanged ? `, condition set to ${lineCondition}` : "";
+    auditDetails.push(`Issued ${line.quantity}x "${item.name}"${sizeSuffix}${serialInfo} to ${recipientLabel(officer)}${byPart}${locPart}${condPart}`);
   }
 
   if (errors.length) return { ok: false, errors };
@@ -248,7 +270,7 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
   const variantDeltas = Array.from(variantRemaining.entries()).map(([id, newQty]) => ({ id, newQty }));
   const itemDeltas = Array.from(itemRemaining.entries()).map(([id, newQty]) => ({ id, newQty, setIssued: itemSetIssued.has(id) }));
   const unitIssues = Array.from(usedUnitIds).map((id) => ({ id, officerId: officer.id }));
-  return { ok: true, variantDeltas, itemDeltas, unitIssues, assignments, auditDetails };
+  return { ok: true, variantDeltas, itemDeltas, unitIssues, assignments, auditDetails, unitConditionUpdates };
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -877,6 +899,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (!plan.ok) { const e = plan.errors[0]; return res.status(e.code).json({ message: e.message }); }
 
       const [a] = await storage.issueBatch(plan);
+      for (const u of plan.unitConditionUpdates ?? [])
+        await storage.updateUnit(u.id, { condition: u.condition });
       await audit("issue", "assignment", a.id, plan.auditDetails[0], d.issuedBy);
       res.json(a);
     } catch (e) { handleErr(e, res); }
@@ -900,6 +924,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           quantity: z.number().int().positive(),
           itemUnitId: z.number().nullish(),
           itemVariantId: z.number().nullish(),
+          conditionOut: z.string().nullish(),
         })).min(1),
       });
       const d = schema.parse(req.body);
@@ -920,6 +945,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(409).json({ message: "Nothing was issued — one or more lines are invalid.", errors: plan.errors.map((e) => ({ index: e.index, message: e.message })) });
 
       const created = await storage.issueBatch(plan);
+      // #9: persist per-line condition changes onto serialized units (issue_batch
+      // only sets status/assignedOfficerId, never condition).
+      for (const u of plan.unitConditionUpdates ?? [])
+        await storage.updateUnit(u.id, { condition: u.condition });
       for (let i = 0; i < created.length; i++)
         await audit("issue", "assignment", created[i].id, plan.auditDetails[i], d.issuedBy);
 
