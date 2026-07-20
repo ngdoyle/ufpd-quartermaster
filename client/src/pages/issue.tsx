@@ -572,9 +572,9 @@ export default function IssueReturn() {
           <Card className="max-w-xl p-5">
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <Label>Officer</Label>
+                <Label>Issue To</Label>
                 <Select value={officerId} onValueChange={requestOfficerChange}>
-                  <SelectTrigger data-testid="select-officer"><SelectValue placeholder="Select officer…" /></SelectTrigger>
+                  <SelectTrigger data-testid="select-officer"><SelectValue placeholder="Select recipient…" /></SelectTrigger>
                   <SelectContent>
                     {officers?.filter((o) => o.status === "active").map((o) => (
                       <SelectItem key={o.id} value={String(o.id)}>
