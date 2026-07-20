@@ -57,3 +57,41 @@ export function isMoneyNonNeg(v: unknown): boolean {
   if (!/^\d+(\.\d{1,2})?$/.test(s)) return false;
   return Number(s) >= 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Item condition vocabulary (Batch 2 #10)                             */
+/* ------------------------------------------------------------------ */
+// The ONLY allowed condition values, verbatim ALL-CAPS. Shared by every
+// condition dropdown (inventory, serialized units, issue/return) and the
+// server-side validation so the two can never drift.
+export const CONDITIONS = [
+  "NEW", "LIKE NEW", "GOOD", "FAIR", "DAMAGED", "MAINTENANCE", "RETIRED",
+] as const;
+export type Condition = (typeof CONDITIONS)[number];
+
+const CONDITION_SET = new Set<string>(CONDITIONS);
+
+/** True when the value is one of the allowed ALL-CAPS conditions. */
+export function isValidCondition(s?: string | null): boolean {
+  return CONDITION_SET.has(String(s ?? "").trim());
+}
+
+// Map legacy mixed-case values onto the new vocabulary. "Poor" has no direct
+// equivalent in the new list and is folded into FAIR (its nearest neighbour).
+const LEGACY_CONDITION_MAP: Record<string, Condition> = {
+  "new": "NEW",
+  "like new": "LIKE NEW",
+  "good": "GOOD",
+  "fair": "FAIR",
+  "poor": "FAIR",
+  "damaged": "DAMAGED",
+  "maintenance": "MAINTENANCE",
+  "retired": "RETIRED",
+};
+
+/** Normalize any legacy/mixed-case condition to the allowed ALL-CAPS value. */
+export function normalizeCondition(s?: string | null): string {
+  const raw = String(s ?? "").trim();
+  if (CONDITION_SET.has(raw)) return raw;
+  return LEGACY_CONDITION_MAP[raw.toLowerCase()] ?? raw;
+}

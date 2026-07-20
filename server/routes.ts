@@ -8,7 +8,7 @@ import {
 } from "@shared/schema";
 import type { InsertItemVariant, InsertAssignment, Officer } from "@shared/schema";
 import type { IssueBatchPlan, KitIssuePlan, ReturnPlan } from "./storage";
-import { isValidEmail, isValidPhone, normalizePhone, isWholeNonNeg, isMoneyNonNeg } from "@shared/validation";
+import { isValidEmail, isValidPhone, normalizePhone, isWholeNonNeg, isMoneyNonNeg, isValidCondition, normalizeCondition, CONDITIONS } from "@shared/validation";
 import { sendEmail, activeProvider } from "./email";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -75,8 +75,12 @@ function validateItemCreate(b: any): string | null {
   if (b.type !== "sized" && b.quantity != null && !isWholeNonNeg(b.quantity)) return "Quantity must be a whole number ≥ 0.";
   if (b.parLevel != null && b.parLevel !== "" && !isWholeNonNeg(b.parLevel)) return "PAR must be a whole number ≥ 0.";
   if (b.unitCost != null && b.unitCost !== "" && !isMoneyNonNeg(b.unitCost)) return "Unit cost must be a dollar amount ≥ 0.";
+  if (has(b.condition) && !isValidCondition(b.condition)) return conditionError;
   return null;
 }
+
+// Shared message for an out-of-vocabulary condition (Batch 2 #10).
+const conditionError = `Condition must be one of: ${CONDITIONS.join(", ")}.`;
 
 /* ------------------- Brute-force protection --------------------- */
 // Throttle repeated authentication attempts. Keyed on client IP + the
@@ -228,7 +232,7 @@ async function planIssue(officer: Officer, lines: IssueLineInput[], opts: IssueO
     assignments.push({
       itemId: item.id, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any,
       officerId: officer.id, quantity: line.quantity, status: "active",
-      conditionOut: opts.conditionOut ?? item.condition ?? "New", conditionIn: null as any,
+      conditionOut: normalizeCondition(opts.conditionOut ?? item.condition ?? "NEW"), conditionIn: null as any,
       issuedAt: nowISO(), dueDate: opts.dueDate ?? null as any, returnedAt: null as any,
       issuedBy: opts.issuedBy ?? null as any, issuedLocation: opts.issuedLocation ?? null as any,
       returnedBy: null as any,
@@ -548,6 +552,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
   app.patch("/api/items/:id", writeGuard, async (req, res) => {
     const { actor, ...patch } = req.body ?? {};
+    if (patch.condition != null && patch.condition !== "" && !isValidCondition(patch.condition))
+      return res.status(400).json({ message: conditionError });
     const before = await storage.getItem(Number(req.params.id));
     const i = await storage.updateItem(Number(req.params.id), patch);
     if (!i) return res.status(404).json({ message: "Not found" });
@@ -577,6 +583,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const item = await storage.getItem(itemId);
       if (!item) return res.status(404).json({ message: "Item not found." });
       const body = req.body ?? {};
+      if (body.condition != null && body.condition !== "" && !isValidCondition(body.condition))
+        return res.status(400).json({ message: conditionError });
       const created: any[] = [];
 
       const make = (serialNumber: string, secondary?: string | null) => {
@@ -589,7 +597,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           itemId,
           serialNumber: primary,
           secondarySerialNumber: sec,
-          condition: body.condition ?? "New",
+          condition: body.condition ?? "NEW",
           location: body.location ?? item.location ?? "",
           acquiredDate: body.acquiredDate ?? "",
           notes: body.notes ?? "",
@@ -626,6 +634,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const unit = await storage.getUnit(Number(req.params.unitId));
       if (!unit) return res.status(404).json({ message: "Unit not found." });
       const { actor, ...patch } = req.body ?? {};
+      if (patch.condition != null && patch.condition !== "" && !isValidCondition(patch.condition))
+        return res.status(400).json({ message: conditionError });
       const item = await storage.getItem(unit.itemId);
       // Dual-serial items require both panels remain populated after an edit.
       if (item?.requiresDualSerial) {
@@ -789,7 +799,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             itemId,
             serialNumber: e.serialNumber,
             secondarySerialNumber: e.secondarySerialNumber ?? null,
-            condition: "New",
+            condition: "NEW",
             location: item.location ?? "",
             acquiredDate: "",
             notes: "",
@@ -933,7 +943,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const item = await storage.getItem(a.itemId);
       const officer = await storage.getOfficer(a.officerId);
       const { conditionIn, returnedBy, notes } = req.body ?? {};
-      const condition = conditionIn ?? "Good";
+      if (conditionIn != null && conditionIn !== "" && !isValidCondition(conditionIn))
+        return res.status(400).json({ message: conditionError });
+      const condition = conditionIn ?? "GOOD";
 
       // Pre-resolve the return branch (sized / serialized / bulk) here, then
       // apply the assignment update + stock restock atomically via one RPC so a
@@ -1113,7 +1125,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
         plan.assignments.push({
           itemId: item.id, itemUnitId: itemUnitId as any, itemVariantId: itemVariantId as any, officerId: officer.id, quantity: line.quantity, status: "active",
-          conditionOut: item.condition ?? "New", conditionIn: null as any,
+          conditionOut: normalizeCondition(item.condition ?? "NEW"), conditionIn: null as any,
           issuedAt: nowISO(), dueDate: dueDate ?? null as any, returnedAt: null as any,
           issuedBy: issuedBy ?? null as any, returnedBy: null as any,
           signature: signature ?? null as any, notes: notes ?? "Kit issue",

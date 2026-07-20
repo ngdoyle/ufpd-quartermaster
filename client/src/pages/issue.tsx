@@ -24,7 +24,7 @@ import {
 import { Input as In } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScannerDialog } from "@/components/scanner-dialog";
-import { isValidEmail } from "@shared/validation";
+import { isValidEmail, CONDITIONS, normalizeCondition } from "@shared/validation";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowUpRight, ArrowDownLeft, Search, PackageCheck, Plus, Trash2, ShoppingCart, ScanLine } from "lucide-react";
 
@@ -107,7 +107,7 @@ export default function IssueReturn() {
 
   // return state
   const [returnFor, setReturnFor] = useState<Assignment | null>(null);
-  const [conditionIn, setConditionIn] = useState("Good");
+  const [conditionIn, setConditionIn] = useState("GOOD");
   const [returnNote, setReturnNote] = useState("");
   const [returning, setReturning] = useState(false);
 
@@ -547,7 +547,7 @@ export default function IssueReturn() {
       });
       invalidateAll();
       toast({ title: "Item returned" });
-      setReturnFor(null); setReturnNote(""); setConditionIn("Good");
+      setReturnFor(null); setReturnNote(""); setConditionIn("GOOD");
     } catch (e: any) {
       toast({ title: "Return failed", description: e.message, variant: "destructive" });
     } finally { setReturning(false); }
@@ -852,7 +852,7 @@ export default function IssueReturn() {
               <Label>Returned condition</Label>
               <Select value={conditionIn} onValueChange={setConditionIn}>
                 <SelectTrigger data-testid="select-condition"><SelectValue /></SelectTrigger>
-                <SelectContent>{["Good", "Fair", "Poor", "Damaged"].map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                <SelectContent>{CONDITIONS.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">

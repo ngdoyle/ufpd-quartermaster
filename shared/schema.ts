@@ -76,7 +76,7 @@ export const items = sqliteTable("items", {
   vendor: text("vendor"),
   grantNumber: text("grant_number"),
   expirationDate: text("expiration_date"),
-  condition: text("condition").default("New"),
+  condition: text("condition").default("NEW"),
   status: text("status").notNull().default("in_stock"),
   // For `sized` items: whether issued sizes are restocked on return.
   // "returnable" (default) restocks the variant; "consumable" does not.
@@ -110,7 +110,7 @@ export const itemUnits = sqliteTable("item_units", {
   serialNumber: text("serial_number").notNull(),
   secondarySerialNumber: text("secondary_serial_number"),
   status: text("status").notNull().default("in_stock"),
-  condition: text("condition").default("New"),
+  condition: text("condition").default("NEW"),
   assignedOfficerId: integer("assigned_officer_id"),
   location: text("location"),
   acquiredDate: text("acquired_date"),
@@ -208,7 +208,7 @@ export const assignments = sqliteTable("assignments", {
   officerId: integer("officer_id").notNull(),
   quantity: integer("quantity").notNull().default(1),
   status: text("status").notNull().default("active"),
-  conditionOut: text("condition_out").default("New"),
+  conditionOut: text("condition_out").default("NEW"),
   conditionIn: text("condition_in"),
   issuedAt: text("issued_at").notNull(),
   dueDate: text("due_date"),

@@ -29,7 +29,7 @@ import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { SerialUnitsDialog } from "@/components/serial-units-dialog";
 import { SizeVariantsDialog } from "@/components/size-variants-dialog";
 import { LOCATIONS } from "@/lib/constants";
-import { isWholeNonNeg, isMoneyNonNeg } from "@shared/validation";
+import { isWholeNonNeg, isMoneyNonNeg, CONDITIONS, normalizeCondition } from "@shared/validation";
 import { AlertTriangle } from "lucide-react";
 import {
   ITEM_CATEGORIES, ITEM_SUBCATEGORIES, getItemFields, parseAttributes, attributeSummary,
@@ -44,7 +44,7 @@ type InvItem = Item & { unitCounts?: UnitCounts; variantCounts?: VariantCounts; 
 const blank = (): Partial<Item> => ({
   name: "", category: "", subcategory: "", type: "consumable", sku: "", serialNumber: "", size: "", color: "",
   quantity: 0, parLevel: 0, location: "", unitCost: 0, vendor: "", grantNumber: "", expirationDate: "",
-  lastInspected: "", condition: "New", status: "in_stock", requiresInspection: false, requiresDualSerial: false, returnBehavior: "returnable", attributes: "", notes: "",
+  lastInspected: "", condition: "NEW", status: "in_stock", requiresInspection: false, requiresDualSerial: false, returnBehavior: "returnable", attributes: "", notes: "",
 });
 
 // Legacy catalog-level serial fields duplicate the per-unit serial system
@@ -430,9 +430,9 @@ export default function Inventory() {
               <Field label="Vendor"><Input value={form.vendor ?? ""} onChange={(e) => setForm({ ...form, vendor: e.target.value })} /></Field>
               <Field label="Grant #"><Input value={form.grantNumber ?? ""} onChange={(e) => setForm({ ...form, grantNumber: e.target.value })} /></Field>
               <Field label="Condition">
-                <Select value={form.condition ?? "New"} onValueChange={(v) => setForm({ ...form, condition: v })}>
+                <Select value={form.condition ?? "NEW"} onValueChange={(v) => setForm({ ...form, condition: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{["New", "Good", "Fair", "Poor", "Damaged"].map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  <SelectContent>{CONDITIONS.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
 
@@ -548,7 +548,7 @@ export default function Inventory() {
             grantNumber: (r["Grant"] ?? "").trim(),
             expirationDate: (r["Expiration"] ?? "").trim(),
             lastInspected: (r["Last Inspected"] ?? "").trim(),
-            condition: (r["Condition"] ?? "New").trim() || "New",
+            condition: normalizeCondition((r["Condition"] ?? "").trim() || "NEW"),
             attributes: Object.keys(attrs).length ? JSON.stringify(attrs) : "",
             notes: (r["Notes"] ?? "").trim(),
           };
@@ -762,7 +762,7 @@ const ITEM_COLUMNS: ColumnSpec[] = [
   { header: "Grant", example: "" },
   { header: "Expiration", example: "", note: "OC Spray, TASER Cartridges (YYYY-MM-DD)" },
   { header: "Last Inspected", example: "", note: "Firearms (YYYY-MM-DD)" },
-  { header: "Condition", example: "New" },
+  { header: "Condition", example: "NEW", note: "NEW, LIKE NEW, GOOD, FAIR, DAMAGED, MAINTENANCE, RETIRED" },
   // --- category-specific columns (fill only those that apply to the row) ---
   ...ATTRIBUTE_COLUMNS.map((c) => ({ header: c.header, example: c.example, note: c.appliesTo })),
   { header: "Notes", example: "" },

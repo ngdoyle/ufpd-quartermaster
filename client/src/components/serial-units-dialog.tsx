@@ -20,8 +20,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Pencil, Trash2, Download, Layers, X } from "lucide-react";
 import { LOCATIONS } from "@/lib/constants";
-
-const CONDITIONS = ["New", "Good", "Fair", "Poor", "Damaged"];
+import { CONDITIONS, normalizeCondition } from "@shared/validation";
 
 /** Dual-serial items (e.g. ballistic vests) carry two panel serials (FP/BP).
  *  Driven by the per-item `requiresDualSerial` flag; falls back to the legacy
@@ -40,7 +39,7 @@ type UnitForm = {
 };
 
 const blankForm = (item: Item): UnitForm => ({
-  serialNumber: "", secondarySerialNumber: "", condition: "New",
+  serialNumber: "", secondarySerialNumber: "", condition: "NEW",
   location: item.location ?? "", acquiredDate: "", notes: "",
 });
 
@@ -186,7 +185,7 @@ export function SerialUnitsDialog({
                       <div className="flex items-center justify-end gap-1">
                         <Button variant="ghost" size="icon" title="Edit" onClick={() => setForm({
                           id: u.id, serialNumber: u.serialNumber, secondarySerialNumber: u.secondarySerialNumber ?? "",
-                          condition: u.condition ?? "New", location: u.location ?? "", acquiredDate: u.acquiredDate ?? "", notes: u.notes ?? "",
+                          condition: normalizeCondition(u.condition ?? "NEW"), location: u.location ?? "", acquiredDate: u.acquiredDate ?? "", notes: u.notes ?? "",
                         })} data-testid={`button-edit-unit-${u.id}`}><Pencil className="h-4 w-4" /></Button>
                         <AlertDialog>
                           <AlertDialogTrigger asChild>
