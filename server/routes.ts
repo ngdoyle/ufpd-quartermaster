@@ -13,7 +13,8 @@ import { sendEmail, activeProvider } from "./email";
 import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
-import { apiAuthGate, issueToken, revokeToken, bearerToken, requireRole } from "./session";
+import { apiAuthGate, issueToken, revokeToken, bearerToken, requireRole, revokeUserSessions } from "./session";
+import { randomBytes } from "node:crypto";
 
 // Role guards mirror the client capability checks (see lib/app-context.ts).
 // Reads are available to any authenticated user; writes are restricted here so
@@ -26,6 +27,23 @@ export { hashPassword };
 
 const nowISO = () => new Date().toISOString();
 const stripPw = (u: any) => { if (!u) return u; const { password, ...rest } = u; return rest; };
+
+// Generate a cryptographically secure temporary password. Uses an unambiguous
+// charset (no 0/O, 1/l/I) so it can be read off an email without confusion.
+// Each character is drawn with rejection sampling to avoid modulo bias.
+function generateTempPassword(length = 14): string {
+  const charset = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  const max = 256 - (256 % charset.length);
+  let out = "";
+  while (out.length < length) {
+    for (const byte of randomBytes(length * 2)) {
+      if (byte >= max) continue; // reject to keep the distribution uniform
+      out += charset[byte % charset.length];
+      if (out.length === length) break;
+    }
+  }
+  return out;
+}
 
 // Server-side enforcement of the USER-APPROVED #19 required set + formats. The
 // server is the authorization/validation boundary — the client rules mirror it.
@@ -271,7 +289,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!newPassword || String(newPassword).length < 12) return res.status(400).json({ message: "New password must be at least 12 characters." });
     const updated = await storage.updateUser(user.id, { password: hashPassword(newPassword), mustChangePassword: false });
     await audit("change_password", "user", user.id, `${user.username} changed password`, user.username);
-    res.json(stripPw(updated));
+    // Revoke other live sessions for this account (best effort), then re-issue a
+    // token for the current request so the caller is not logged out mid-flow.
+    revokeUserSessions(user.id);
+    const token = issueToken(updated ?? user);
+    res.json({ ...stripPw(updated), token });
   });
 
   /* ----------------------------- USERS ---------------------------- */
@@ -1158,6 +1180,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         message: "Too many email requests. Please wait a few minutes and try again.",
       });
     },
+  });
+
+  // Admin-only password reset. Generates a cryptographically secure temporary
+  // password, stores only its bcrypt hash, forces a change at next sign-in, and
+  // emails the temp password to the user's address on file. The temp password
+  // is NEVER returned to the client, logged, or written to the audit trail —
+  // it exists in the outbound email only. Rate-limited like other sends.
+  app.post("/api/users/:id/reset-password", adminGuard, emailSendLimiter, async (req, res) => {
+    const target = await storage.getUser(Number(req.params.id));
+    if (!target) return res.status(404).json({ message: "Not found" });
+    if (!isValidEmail(target.email)) {
+      return res.status(400).json({ message: "This user has no email address on file. Add one before resetting the password." });
+    }
+    const tempPassword = generateTempPassword();
+    await storage.updateUser(target.id, { password: hashPassword(tempPassword), mustChangePassword: true });
+    // Force any live sessions for this account to re-authenticate (best effort).
+    revokeUserSessions(target.id);
+    const body = `Hello ${target.name},\n\nAn administrator has reset your UFPD Quartermaster password.\n\nUsername: ${target.username}\nTemporary password: ${tempPassword}\n\nPlease sign in with this temporary password. You will be required to set a new password immediately.\n\n— UFPD Quartermaster`;
+    const log = await sendEmail({
+      to: target.email!,
+      subject: "UFPD Quartermaster — temporary password",
+      body,
+      template: "password_reset",
+      relatedType: "user",
+      relatedId: target.id,
+    });
+    // Audit records only that a reset occurred — never the password content.
+    await audit("reset_password", "user", target.id, `Password reset for ${target.username} (email sent)`, req.body?.actor);
+    // Do not echo the temp password; report only the delivery status.
+    res.json({ ok: true, status: log.status, provider: log.provider });
   });
 
   app.get("/api/email/config", writeGuard, async (_req, res) => {

@@ -73,6 +73,17 @@ export function revokeToken(token: string | undefined): void {
   if (token) sessions.delete(token);
 }
 
+/**
+ * Invalidate every active session for a given user. Best-effort defense used
+ * after a password reset or change so any other live sessions for that account
+ * are forced to re-authenticate. Returns the number of sessions revoked.
+ */
+export function revokeUserSessions(userId: number): number {
+  let n = 0;
+  sessions.forEach((s, t) => { if (s.userId === userId) { sessions.delete(t); n++; } });
+  return n;
+}
+
 /** Pull the bearer token out of the Authorization header. */
 export function bearerToken(req: Request): string | undefined {
   const h = req.headers.authorization;

@@ -16,7 +16,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, ShieldCheck, Trash2, Pencil, Check, Minus } from "lucide-react";
+import { Plus, ShieldCheck, Trash2, Pencil, Check, Minus, KeyRound } from "lucide-react";
 
 const ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
 const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", supervisor: "purple", officer: "gray", auditor: "amber" };
@@ -72,13 +72,23 @@ export default function Users() {
     if (!form.username || !form.name || !form.password) return toast({ title: "All fields required", variant: "destructive" });
     setSaving(true);
     try {
-      await apiRequest("POST", "/api/users", { ...form, active: true, officerId: null, actor: user?.name });
+      await apiRequest("POST", "/api/users", { ...form, email: form.email.trim() || null, active: true, officerId: null, actor: user?.name });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       toast({ title: "Account created" });
-      setCreating(false); setForm({ username: "", name: "", role: "officer", password: "", mustChangePassword: true });
+      setCreating(false); setForm({ username: "", name: "", role: "officer", password: "", email: "", mustChangePassword: true });
     } catch (e: any) {
       toast({ title: "Failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
     } finally { setSaving(false); }
+  }
+
+  async function resetPassword(u: any) {
+    setResettingId(u.id);
+    try {
+      await apiRequest("POST", `/api/users/${u.id}/reset-password`, { actor: user?.name });
+      toast({ title: "Temporary password emailed." });
+    } catch (e: any) {
+      toast({ title: "Reset failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
+    } finally { setResettingId(null); }
   }
 
   async function toggleActive(u: any) {
@@ -108,13 +118,36 @@ export default function Users() {
                   <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/12 text-primary"><ShieldCheck className="h-5 w-5" /></span>
                   <div>
                     <p className="font-medium leading-tight">{u.name} {u.id === user?.id && <span className="text-xs text-muted-foreground">(you)</span>}</p>
-                    <p className="text-xs text-muted-foreground">{u.username}</p>
+                    <p className="text-xs text-muted-foreground">{u.username}{u.email ? ` · ${u.email}` : ""}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <Pill tone={roleTone[u.role]}>{roleLabel[u.role as Role]}</Pill>
                   <Pill tone={u.active ? "green" : "gray"}>{u.active ? "Active" : "Disabled"}</Pill>
                   <Button variant="outline" size="sm" onClick={() => openEdit(u)} data-testid={`button-edit-user-${u.id}`}><Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit</Button>
+                  {isAdmin && (
+                    <AlertDialog>
+                      <span title={u.email ? "Email a temporary password" : "No email on file — add one before resetting"} className="inline-flex">
+                        <AlertDialogTrigger asChild>
+                          <Button variant="outline" size="sm" disabled={!u.email || resettingId === u.id} data-testid={`button-reset-password-${u.id}`}>
+                            <KeyRound className="mr-1.5 h-3.5 w-3.5" /> {resettingId === u.id ? "Sending…" : "Reset Password"}
+                          </Button>
+                        </AlertDialogTrigger>
+                      </span>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Reset password for {u.username}?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            A temporary password will be generated and emailed to {u.email}. The user must change it at next sign-in. The temporary password is never displayed here.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => resetPassword(u)} data-testid={`button-confirm-reset-${u.id}`}>Send temporary password</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  )}
                   {u.id !== user?.id && (
                     <>
                       <Button variant="outline" size="sm" onClick={() => toggleActive(u)} data-testid={`button-toggle-${u.id}`}>{u.active ? "Disable" : "Enable"}</Button>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { useApp } from "@/lib/app-context";
-import { apiRequest, errorMessage } from "@/lib/queryClient";
+import { apiRequest, errorMessage, setAuthToken } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,8 +27,11 @@ export default function ChangePassword({ forced = false }: { forced?: boolean })
     if (newPassword.length < 12) return setError("Password must be at least 12 characters.");
     setLoading(true);
     try {
-      const res = await apiRequest("POST", "/api/change-password", { userId: user!.id, currentPassword, newPassword });
+      const res = await apiRequest("POST", "/api/change-password", { currentPassword, newPassword });
       const updated = await res.json();
+      // The server rotates the session token on a successful change (old
+      // sessions are revoked); adopt the fresh token so we stay signed in.
+      if (updated?.token) setAuthToken(updated.token);
       setUser({ ...user!, mustChangePassword: false });
       toast({ title: "Password updated" });
       navigate("/");
