@@ -1158,7 +1158,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   /* ----------------------------- AUDIT ---------------------------- */
-  app.get("/api/audit", async (req, res) => {
+  // Read-only activity trail. Restricted to roles that oversee operations —
+  // admin, quartermaster (Batch 5), supervisor, auditor. Officers are excluded.
+  app.get("/api/audit", requireRole("admin", "quartermaster", "supervisor", "auditor"), async (req, res) => {
     const limit = req.query.limit ? Number(req.query.limit) : 200;
     res.json(await storage.listAudit(limit));
   });

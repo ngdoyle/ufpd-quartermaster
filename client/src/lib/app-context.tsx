@@ -105,7 +105,7 @@ export const can = {
   issueReturn: (r?: Role) => r === "admin" || r === "quartermaster",
   manageUsers: (r?: Role) => r === "admin",
   viewReports: (r?: Role) => r === "admin" || r === "quartermaster" || r === "supervisor" || r === "auditor",
-  viewAudit: (r?: Role) => r === "admin" || r === "auditor" || r === "supervisor",
+  viewAudit: (r?: Role) => r === "admin" || r === "quartermaster" || r === "auditor" || r === "supervisor",
   viewCompliance: (r?: Role) => r === "admin" || r === "auditor" || r === "supervisor",
   email: (r?: Role) => r === "admin" || r === "quartermaster",
 };
