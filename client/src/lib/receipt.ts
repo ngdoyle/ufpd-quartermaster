@@ -18,6 +18,8 @@ export type ReceiptLine = {
 
 export type IssueReceiptData = {
   timestamp: string;
+  /** ISO issuance datetime — used only for the PDF filename date (#7). */
+  issuedAt?: string | null;
   officerName: string;
   badgeNumber: string;
   issuedBy?: string | null;
@@ -155,8 +157,24 @@ export function buildReturnReceipt(data: ReturnReceiptData): jsPDF {
 
 function slug(s: string) { return s.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, ""); }
 
+// YYYY-MM-DD in local time. Falls back to today when no/invalid date is given.
+function fileDate(iso?: string | null): string {
+  const d = iso ? new Date(iso) : new Date();
+  const dt = isNaN(d.getTime()) ? new Date() : d;
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${dt.getFullYear()}-${m}-${day}`;
+}
+
+// Preserve spaces (the required format has them) but strip characters that are
+// invalid in filenames on Windows/macOS/Linux, plus control chars.
+function sanitizeFilename(s: string): string {
+  return s.replace(/[\/\\:*?"<>|\x00-\x1f]/g, "").replace(/\s+/g, " ").trim();
+}
+
 export function downloadIssueReceipt(data: IssueReceiptData) {
-  buildIssueReceipt(data).save(`issue_receipt_${slug(data.officerName)}_${Date.now()}.pdf`);
+  const name = sanitizeFilename(data.officerName) || "Recipient";
+  buildIssueReceipt(data).save(`${fileDate(data.issuedAt)}_Items Issued_${name}.pdf`);
 }
 
 export function downloadReturnReceipt(data: ReturnReceiptData) {

@@ -678,6 +678,7 @@ function ReprintReceiptButton({ assignment, item, officer }: { assignment: Assig
   function reprint() {
     downloadIssueReceipt({
       timestamp: fmtDateTime(assignment.issuedAt),
+      issuedAt: assignment.issuedAt,
       officerName: (officer.type ?? "person") === "business" ? officer.firstName : `${officer.firstName} ${officer.lastName}`,
       badgeNumber: officer.badgeNumber,
       issuedBy: assignment.issuedBy ?? null,

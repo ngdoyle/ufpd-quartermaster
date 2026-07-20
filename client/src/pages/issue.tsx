@@ -469,6 +469,7 @@ export default function IssueReturn() {
         setIssueReceipt({
           count: n,
           timestamp: fmtDateTime(new Date().toISOString()),
+          issuedAt: new Date().toISOString(),
           officerName: recipName(selectedOfficer),
           badgeNumber: selectedOfficer.badgeNumber,
           issuedBy: issuedBy || user?.name || null,
