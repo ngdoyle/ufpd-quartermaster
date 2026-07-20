@@ -92,6 +92,9 @@ export default function IssueReturn() {
   const [issuedBy, setIssuedBy] = useState("");
   const [issuedLocation, setIssuedLocation] = useState("");
   const [issuing, setIssuing] = useState(false);
+  // #6: issued-by, issued-location and signature are required to complete an
+  // issuance. Surface inline errors only once the user has tried to submit.
+  const [triedIssue, setTriedIssue] = useState(false);
   // post-issue / post-return confirmation + receipt (#2)
   const [issueReceipt, setIssueReceipt] = useState<(IssueReceiptData & { count: number }) | null>(null);
   const [returnReceipt, setReturnReceipt] = useState<(ReturnReceiptData & { itemLabel: string }) | null>(null);
@@ -446,9 +449,19 @@ export default function IssueReturn() {
     return null;
   }
 
+  // #6: required-field checks for an issuance.
+  const missingIssuedBy = !issuedBy.trim();
+  const missingIssuedLocation = !issuedLocation.trim();
+  const missingSignature = !signature.trim();
+  const requiredValid = !missingIssuedBy && !missingIssuedLocation && !missingSignature;
+
   async function issueCart() {
     if (!officerId) return toast({ title: "Select an officer", variant: "destructive" });
     if (lines.length === 0) return;
+    if (!requiredValid) {
+      setTriedIssue(true);
+      return toast({ title: "Complete the required fields", description: "Issued by, issued location and recipient signature are required.", variant: "destructive" });
+    }
     setIssuing(true);
     try {
       const wantsReceipt = emailReceipt && isValidEmail(selectedOfficer?.email);
@@ -500,6 +513,7 @@ export default function IssueReturn() {
       }
       toast({ title: `Issued ${n} item${n === 1 ? "" : "s"} to ${who}`, description: receiptNote });
       setLines([]); setLineErrors({}); setSignature(""); setNotes(""); setDueDate(""); setEmailReceipt(false);
+      setTriedIssue(false);
       resetItemPickers();
     } catch (e: any) {
       const mapped = parseBatchError(e);
@@ -741,20 +755,23 @@ export default function IssueReturn() {
 
             <div className="mt-4 space-y-4">
               <div className="space-y-1.5">
-                <Label>Issued by (optional)</Label>
+                <Label>Issued by <span className="text-destructive">*</span></Label>
                 <Input placeholder="Who is issuing these items" value={issuedBy} onChange={(e) => setIssuedBy(e.target.value)} data-testid="input-issued-by" />
+                {triedIssue && missingIssuedBy && <p className="text-xs text-destructive" data-testid="error-issued-by">Issued by is required.</p>}
               </div>
               <div className="space-y-1.5">
-                <Label>Issued location (optional)</Label>
+                <Label>Issued location <span className="text-destructive">*</span></Label>
                 <Input placeholder="Given in person, locker #, front desk…" value={issuedLocation} onChange={(e) => setIssuedLocation(e.target.value)} data-testid="input-issued-location" />
+                {triedIssue && missingIssuedLocation && <p className="text-xs text-destructive" data-testid="error-issued-location">Issued location is required.</p>}
               </div>
               <div className="space-y-1.5">
                 <Label>Due date (optional)</Label>
                 <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} data-testid="input-due-date" />
               </div>
               <div className="space-y-1.5">
-                <Label>Recipient signature / acknowledgement</Label>
+                <Label>Recipient signature / acknowledgement <span className="text-destructive">*</span></Label>
                 <Input placeholder="Type full name to acknowledge receipt" value={signature} onChange={(e) => setSignature(e.target.value)} data-testid="input-signature" />
+                {triedIssue && missingSignature && <p className="text-xs text-destructive" data-testid="error-signature">Recipient signature is required.</p>}
               </div>
               <div className="space-y-1.5">
                 <Label>Notes (optional)</Label>
