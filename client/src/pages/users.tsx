@@ -23,7 +23,7 @@ const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", sup
 
 // Capability matrix — derived directly from the `can` guard functions (the same
 // source the server route guards mirror), so it can never drift from the truth.
-const CAP_ROLES: Role[] = ["admin", "quartermaster", "auditor"];
+const CAP_ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
 const CAPABILITIES: { label: string; check: (r: Role) => boolean }[] = [
   { label: "Manage users", check: (r) => can.manageUsers(r) },
   { label: "Issue / return", check: (r) => can.issueReturn(r) },
@@ -219,7 +219,7 @@ export default function Users() {
       <Card className="mt-6 overflow-hidden" data-testid="card-capability-matrix">
         <div className="border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">Role capabilities</h2>
-          <p className="text-xs text-muted-foreground">What each role can do. Officers have self-service access only and are omitted here.</p>
+          <p className="text-xs text-muted-foreground">What each role can do across all five roles. Reflects the capability checks the server route guards enforce. Officers additionally have self-service access to their own record.</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
