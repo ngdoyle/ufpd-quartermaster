@@ -1,6 +1,6 @@
 import type { ItemWithStock } from "@shared/schema";
 import { newDoc, reportHeader, reportFooter, drawTable, sectionTitle, MARGIN, pageW, pageH } from "./pdf";
-import { fmtCurrency, exportCsv } from "@/lib/format";
+import { fmtCurrency, exportCsv, reportFilename } from "@/lib/format";
 
 /* ------------------------------------------------------------------ *
  * #5 By-Location report. Items grouped by `location` with per-location
@@ -78,7 +78,7 @@ export function buildByLocationPdf(items: ItemWithStock[]) {
 }
 
 export function downloadByLocationPdf(items: ItemWithStock[]) {
-  buildByLocationPdf(items).save(`inventory_by_location_${Date.now()}.pdf`);
+  buildByLocationPdf(items).save(reportFilename("Inventory by Location", "pdf"));
 }
 
 export function exportByLocationCsv(items: ItemWithStock[]) {
@@ -93,7 +93,7 @@ export function exportByLocationCsv(items: ItemWithStock[]) {
     }
     rows.push({ Location: g.location, Item: "SUBTOTAL", Category: "", Type: "", OnHand: g.units, UnitCost: "", ExtValue: g.value.toFixed(2) });
   }
-  exportCsv(`inventory_by_location_${Date.now()}.csv`, rows);
+  exportCsv(reportFilename("Inventory by Location", "csv"), rows);
 }
 
 function typeLabel(t: string): string {

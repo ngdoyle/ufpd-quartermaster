@@ -1,6 +1,6 @@
 import type { ItemWithStock, Assignment, Officer, Item } from "@shared/schema";
 import { newDoc, reportHeader, reportFooter, drawTable, sectionTitle, pageH, type Col } from "./pdf";
-import { fmtDate, fmtCurrency, exportCsv } from "@/lib/format";
+import { fmtDate, fmtCurrency, exportCsv, reportFilename } from "@/lib/format";
 import { inRange, rangeLabel, type PresetKey, type Range } from "./timeframe";
 import { recipientName } from "./issuance";
 
@@ -206,14 +206,12 @@ function labelFor(config: CustomConfig, key: string): string {
 }
 
 export function downloadCustomPdf(config: CustomConfig, data: DataBundle) {
-  generateCustomPdf(config, data).save(`${slug(config.title || "custom_report")}_${Date.now()}.pdf`);
+  generateCustomPdf(config, data).save(reportFilename(config.title || "Custom Report", "pdf"));
 }
 
 export function exportCustomCsv(config: CustomConfig, data: DataBundle) {
   const recs = records(config, data);
   const cols = selectedCols(config);
   const rows = recs.map((r) => Object.fromEntries(cols.map((c) => [c.label, r[c.key] ?? ""])));
-  exportCsv(`${slug(config.title || "custom_report")}_${Date.now()}.csv`, rows);
+  exportCsv(reportFilename(config.title || "Custom Report", "csv"), rows);
 }
-
-function slug(s: string) { return s.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase(); }

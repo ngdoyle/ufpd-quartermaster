@@ -1,5 +1,6 @@
 import type { ItemWithStock } from "@shared/schema";
 import { newDoc, reportHeader, reportFooter, drawTable, sectionTitle, checkbox, MARGIN, LINE, pageW, pageH } from "./pdf";
+import { reportFilename } from "@/lib/format";
 
 /* ==================================================================
  * #4 Quarterly readiness reports — BOTH templates.
@@ -152,7 +153,7 @@ export function buildQuarterlyTemplateA(items: ItemWithStock[], quarter: Quarter
 }
 
 export function downloadQuarterlyTemplateA(items: ItemWithStock[], quarter: Quarter, year: number, inspId: string) {
-  buildQuarterlyTemplateA(items, quarter, year, inspId).save(`quarterly_inspection_checklist_Q${quarter}_${year}.pdf`);
+  buildQuarterlyTemplateA(items, quarter, year, inspId).save(reportFilename(`Quarterly Inspection Checklist Q${quarter} ${year}`, "pdf"));
 }
 
 /* ----------------------------- Template B ----------------------------- */
@@ -316,5 +317,5 @@ function commentsLine(doc: any, y: number): number {
 }
 
 export function downloadQuarterlyTemplateB(items: ItemWithStock[], quarter: Quarter, year: number) {
-  buildQuarterlyTemplateB(items, quarter, year).save(`operational_readiness_Q${quarter}_${year}.pdf`);
+  buildQuarterlyTemplateB(items, quarter, year).save(reportFilename(`Operational Readiness Q${quarter} ${year}`, "pdf"));
 }

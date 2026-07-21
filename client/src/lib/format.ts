@@ -31,6 +31,23 @@ export function relativeDays(d?: string | null): string {
   return `in ${n}d`;
 }
 
+// #12: every generated report artifact is named `YYYY-MM-DD_REPORT TITLE.ext`.
+// Same sanitize approach as the receipt filenames (client/src/lib/receipt.ts):
+// keep spaces, strip characters invalid on Windows/macOS/Linux + control chars.
+function reportDate(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+function sanitizeReportTitle(s: string): string {
+  return s.replace(/[\/\\:*?"<>|\x00-\x1f]/g, "").replace(/\s+/g, " ").trim();
+}
+export function reportFilename(title: string, ext: string): string {
+  const t = sanitizeReportTitle(title) || "Report";
+  return `${reportDate()}_${t}.${ext.replace(/^\./, "")}`;
+}
+
 /** Build a CSV string and trigger a browser download (works in sandboxed iframe via Blob). */
 export function exportCsv(filename: string, rows: Record<string, any>[]) {
   if (!rows.length) return;

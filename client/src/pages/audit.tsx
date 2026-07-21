@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
-import { fmtDateTime, exportCsv } from "@/lib/format";
+import { fmtDateTime, exportCsv, reportFilename } from "@/lib/format";
 import type { AuditEntry } from "@shared/schema";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ export default function Audit() {
     <div>
       <PageHeader title="Activity Log" subtitle="Append-only record of every transaction"
         actions={<Button variant="outline" size="sm" disabled={!data?.length}
-          onClick={() => exportCsv("activity_log.csv", (data ?? []).map((e) => ({ Time: e.timestamp, User: e.username, Action: e.action, Detail: e.detail })))}>
+          onClick={() => exportCsv(reportFilename("Activity Log", "csv"), (data ?? []).map((e) => ({ Time: e.timestamp, User: e.username, Action: e.action, Detail: e.detail })))}>
           <Download className="mr-1.5 h-4 w-4" /> Export CSV</Button>} />
 
       {isLoading ? (

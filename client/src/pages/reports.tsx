@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
-import { fmtDate, fmtCurrency, relativeDays, daysUntil, exportCsv } from "@/lib/format";
+import { fmtDate, fmtCurrency, relativeDays, daysUntil, exportCsv, reportFilename } from "@/lib/format";
 import type { Officer, Item, Assignment, ItemWithStock, ItemUnit } from "@shared/schema";
 import { variantLowStock } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
@@ -184,7 +184,7 @@ export default function Reports() {
         </TabsList>
 
         <TabsContent value="overdue" className="mt-4">
-          <ReportShell title="Overdue Returns" onExport={() => exportCsv("overdue.csv", overdue.map((a) => ({
+          <ReportShell title="Overdue Returns" onExport={() => exportCsv(reportFilename("Overdue Returns", "csv"), overdue.map((a) => ({
             Officer: oName(a.officerId), Item: itemOf(a.itemId)?.name, Due: fmtDate(a.dueDate), Status: relativeDays(a.dueDate),
           })))}>
             {overdue.length === 0 ? <EmptyState title="No overdue items" /> : (
@@ -195,7 +195,7 @@ export default function Reports() {
         </TabsContent>
 
         <TabsContent value="reorder" className="mt-4">
-          <ReportShell title="Reorder List (at/below PAR)" onExport={() => exportCsv("reorder.csv", reorderRows.map((r) => ({
+          <ReportShell title="Reorder List (at/below PAR)" onExport={() => exportCsv(reportFilename("Reorder List (at or below PAR)", "csv"), reorderRows.map((r) => ({
             Item: r.name, OnHand: r.onHand, PAR: r.par, Suggested: r.reorder, Vendor: r.vendor,
           })))}>
             {reorderRows.length === 0 ? <EmptyState title="Stock levels healthy" /> : (
@@ -206,7 +206,7 @@ export default function Reports() {
         </TabsContent>
 
         <TabsContent value="expiring" className="mt-4">
-          <ReportShell title="Expiring & Expired Items" onExport={() => exportCsv("expiring.csv", expiring.map((i) => ({
+          <ReportShell title="Expiring & Expired Items" onExport={() => exportCsv(reportFilename("Expiring and Expired Items", "csv"), expiring.map((i) => ({
             Item: i.name, Serial: i.serialNumber, Expiration: fmtDate(i.expirationDate), Days: daysUntil(i.expirationDate),
           })))}>
             {expiring.length === 0 ? <EmptyState title="No upcoming expirations" /> : (
@@ -219,7 +219,7 @@ export default function Reports() {
         </TabsContent>
 
         <TabsContent value="totals" className="mt-4">
-          <ReportShell title="Inventory Totals by Category" onExport={() => exportCsv("inventory_totals.csv", byCategory.map(([cat, e]) => ({
+          <ReportShell title="Inventory Totals by Category" onExport={() => exportCsv(reportFilename("Inventory Totals by Category", "csv"), byCategory.map(([cat, e]) => ({
             Category: cat, Items: e.count, TotalQty: e.qty, Value: e.value.toFixed(2),
           })))}>
             <SimpleTable head={["Category", "Distinct Items", "Total Qty", "Value"]}

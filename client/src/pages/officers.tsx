@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useApp, can } from "@/lib/app-context";
 import { PageHeader, Pill, StatusBadge, EmptyState } from "@/components/bits";
-import { fmtDate, fmtDateTime, relativeDays, exportCsv } from "@/lib/format";
+import { fmtDate, fmtDateTime, relativeDays, exportCsv, reportFilename } from "@/lib/format";
 import type { Officer, Item, Assignment, ItemUnit } from "@shared/schema";
 import { isDualSerialItem } from "@/components/serial-units-dialog";
 import { downloadIssueReceipt } from "@/lib/receipt";
@@ -195,7 +195,7 @@ export default function Officers() {
   }
 
   function doExport() {
-    exportCsv("personnel.csv", filtered.map((o) => ({
+    exportCsv(reportFilename("Personnel", "csv"), filtered.map((o) => ({
       Badge: o.badgeNumber, Last: o.lastName, First: o.firstName, Rank: o.rank, Unit: o.unit,
       Email: o.email, Phone: o.phone, Status: o.status, Shirt: o.shirtSize, Pants: o.pantsSize,
       Jacket: o.jacketSize, Shoe: o.shoeSize, Vest: o.vestSize, Hat: o.hatSize, Glove: o.gloveSize,

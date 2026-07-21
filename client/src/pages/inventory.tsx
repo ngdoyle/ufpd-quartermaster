@@ -6,7 +6,7 @@ import { useApp, can } from "@/lib/app-context";
 import { PageHeader, StatusBadge, TypeBadge, Pill, EmptyState } from "@/components/bits";
 import { Logo } from "@/components/layout";
 import { fmtCurrency, fmtDate, daysUntil } from "@/lib/format";
-import { exportCsv } from "@/lib/format";
+import { exportCsv, reportFilename } from "@/lib/format";
 import type { Item } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -241,7 +241,7 @@ export default function Inventory() {
   }
 
   function doExport() {
-    exportCsv("inventory.csv", filtered.map((i) => ({
+    exportCsv(reportFilename("Inventory", "csv"), filtered.map((i) => ({
       Name: i.name, Category: i.category, Subcategory: i.subcategory ?? "", Type: i.type, SKU: i.sku, Serial: i.serialNumber,
       Size: i.size, Color: i.color, Quantity: i.quantity, PAR: i.parLevel, Location: i.location,
       UnitCost: i.unitCost, Vendor: i.vendor, Expiration: i.expirationDate, Details: attributeSummary(i), Status: i.status,

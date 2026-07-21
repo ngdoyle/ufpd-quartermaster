@@ -1,6 +1,6 @@
 import type { Assignment, Item, Officer } from "@shared/schema";
 import { newDoc, reportHeader, reportFooter, drawTable, MARGIN, pageW } from "./pdf";
-import { fmtDate, exportCsv } from "@/lib/format";
+import { fmtDate, exportCsv, reportFilename } from "@/lib/format";
 import { inRange, rangeLabel, type PresetKey, type Range } from "./timeframe";
 
 /* ------------------------------------------------------------------ *
@@ -87,7 +87,7 @@ export function buildIssuancePdf(
 export function downloadIssuancePdf(
   assignments: Assignment[], items: Item[], officers: Officer[], preset: PresetKey, range: Range,
 ) {
-  buildIssuancePdf(assignments, items, officers, preset, range).save(`issuance_report_${Date.now()}.pdf`);
+  buildIssuancePdf(assignments, items, officers, preset, range).save(reportFilename("Issuance Report", "pdf"));
 }
 
 export function exportIssuanceCsv(
@@ -97,5 +97,5 @@ export function exportIssuanceCsv(
     Issued: fmtDate(r.issuedAt), Item: r.item, Size: r.size, Qty: r.quantity,
     Recipient: r.recipient, IssuedBy: r.issuedBy, Due: r.dueDate ? fmtDate(r.dueDate) : "", Status: r.status,
   }));
-  exportCsv(`issuance_report_${Date.now()}.csv`, rows);
+  exportCsv(reportFilename("Issuance Report", "csv"), rows);
 }
