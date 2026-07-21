@@ -112,7 +112,11 @@ export function apiAuthGate(req: Request, res: Response, next: NextFunction): vo
   // `/logout` simply revokes whatever token is presented (a no-op if absent or
   // already expired) and must never 401, so it stays open. Everything else is
   // protected.
-  const open = req.path === "/login" || req.path === "/logout";
+  // `/reports/low-stock/run` is invoked by an external scheduler, not a
+  // logged-in user; it authenticates with its own bearer secret (see the
+  // route handler), so it is exempt from the session-token gate.
+  const open = req.path === "/login" || req.path === "/logout"
+    || req.path === "/reports/low-stock/run";
   if (open) return next();
 
   const session = validateToken(bearerToken(req));

@@ -14,7 +14,7 @@ import { z } from "zod";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { hashPassword, verifyPassword, authProvider, authMode } from "./auth";
 import { apiAuthGate, issueToken, revokeToken, bearerToken, requireRole, revokeUserSessions } from "./session";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 
 // Role guards mirror the client capability checks (see lib/app-context.ts).
 // Reads are available to any authenticated user; writes are restricted here so
@@ -1360,6 +1360,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } catch (e) { handleErr(e, res); }
   });
 
+  // #15: weekly low-stock trigger for an EXTERNAL scheduler (not a logged-in
+  // user). Authenticated with a bearer secret (REPORT_TRIGGER_SECRET), compared
+  // in constant time. Emails ALL quartermaster-role users with an email on file.
+  // Skips sending entirely when nothing is low. Exempt from apiAuthGate.
+  app.post("/api/reports/low-stock/run", emailSendLimiter, async (req, res) => {
+    try {
+      const expected = process.env.REPORT_TRIGGER_SECRET;
+      if (!expected) return res.status(500).json({ message: "Trigger endpoint is not configured." });
+      const provided = bearerToken(req);
+      if (!provided || !secretsMatch(provided, expected)) {
+        return res.status(401).json({ message: "Unauthorized." });
+      }
+
+      const items = await storage.listItems();
+      const unitCounts = await storage.unitStatusCountsByItem();
+      const variantCounts = await storage.variantCountsByItem();
+      const low = items
+        .map((i) => ({ i, ...computeStock(i, i.type === "unique" ? unitCounts[i.id] : undefined, i.type === "sized" ? variantCounts[i.id] : undefined) }))
+        .filter((x) => x.lowStock);
+
+      if (low.length === 0) return res.json({ sent: 0, reason: "no low stock items" });
+
+      const users = await storage.listUsers();
+      const qm = users.filter((u) => u.active && u.role === "quartermaster" && isValidEmail(u.email));
+
+      const lines = low.map((x) => `  • ${x.i.name} — ${x.onHand} on hand (par ${x.i.parLevel})`).join("\n");
+      const body = `Weekly low-stock report as of ${new Date().toLocaleString()}:\n\n${lines}\n\n— UFPD Quartermaster`;
+      const subject = `UFPD Quartermaster — Weekly low-stock report (${low.length} item${low.length === 1 ? "" : "s"})`;
+
+      const recipients: string[] = [];
+      for (const u of qm) {
+        await sendEmail({ to: u.email!.trim(), subject, body, template: "low_stock", relatedType: "user", relatedId: u.id });
+        recipients.push(u.email!.trim());
+      }
+      await audit("email", "report", undefined, `Weekly low-stock report sent to ${recipients.length} user(s)`);
+      res.json({ sent: recipients.length, recipients, items: low.length });
+    } catch (e) { handleErr(e, res); }
+  });
+
   /* --------------------------- DASHBOARD -------------------------- */
   app.get("/api/dashboard", async (_req, res) => {
     const allItems = await storage.listItems();
@@ -1404,6 +1443,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 function zMsg(e: unknown): string {
   if (e instanceof z.ZodError) return e.errors.map((x) => `${x.path.join(".")}: ${x.message}`).join("; ");
   return (e as Error).message ?? "Invalid row";
+}
+
+// Constant-time secret comparison. Both sides are SHA-256 hashed first so the
+// comparison is length-independent (no early-out timing leak on length).
+function secretsMatch(provided: string, expected: string): boolean {
+  const a = createHash("sha256").update(provided).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
 }
 
 function handleErr(e: unknown, res: Response) {
