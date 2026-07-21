@@ -309,10 +309,10 @@ export default function Scan() {
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <Label className="text-xs">Officer</Label>
+                    <Label className="text-xs">Issue To</Label>
                     <Select value={officerId} onValueChange={setOfficerId}>
                       <SelectTrigger className="mt-1" data-testid="select-officer">
-                        <SelectValue placeholder="Select officer" />
+                        <SelectValue placeholder="Select recipient…" />
                       </SelectTrigger>
                       <SelectContent>
                         {(officers ?? [])
