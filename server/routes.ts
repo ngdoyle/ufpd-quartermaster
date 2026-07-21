@@ -1338,9 +1338,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const schema = z.object({ to: z.string(), actor: z.string().optional() });
       const d = schema.parse(req.body);
-      const officers = await storage.listOfficers();
-      const recipient = officers.find((o) => isValidEmail(o.email) && o.email!.trim().toLowerCase() === d.to.trim().toLowerCase());
-      if (!recipient) return res.status(400).json({ message: "Recipient must be a person or business with an email on file." });
+      // #14: low-stock report recipients are user accounts (login accounts) only.
+      const users = await storage.listUsers();
+      const recipient = users.find((u) => u.active && isValidEmail(u.email) && u.email!.trim().toLowerCase() === d.to.trim().toLowerCase());
+      if (!recipient) return res.status(400).json({ message: "Recipient must be a user account with an email on file." });
 
       const items = await storage.listItems();
       const unitCounts = await storage.unitStatusCountsByItem();
@@ -1353,8 +1354,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? low.map((x) => `  • ${x.i.name} — ${x.onHand} on hand (par ${x.i.parLevel})`).join("\n")
         : "  (No items are at or below their par level.)";
       const body = `Low-stock report as of ${new Date().toLocaleString()}:\n\n${lines}\n\n— UFPD Quartermaster`;
-      const log = await sendEmail({ to: recipient.email!, subject: `UFPD Quartermaster — Low-stock report (${low.length} item${low.length === 1 ? "" : "s"})`, body, template: "low_stock", relatedType: "officer", relatedId: recipient.id });
-      await audit("email", "officer", recipient.id, `Low-stock report ${log.status} to ${recipient.email} (${log.provider})`, d.actor);
+      const log = await sendEmail({ to: recipient.email!, subject: `UFPD Quartermaster — Low-stock report (${low.length} item${low.length === 1 ? "" : "s"})`, body, template: "low_stock", relatedType: "user", relatedId: recipient.id });
+      await audit("email", "user", recipient.id, `Low-stock report ${log.status} to ${recipient.email} (${log.provider})`, d.actor);
       res.json({ ...log, count: low.length });
     } catch (e) { handleErr(e, res); }
   });

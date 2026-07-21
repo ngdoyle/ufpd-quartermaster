@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient, errorMessage } from "@/lib/queryClient";
 import { useApp, can } from "@/lib/app-context";
 import { isValidEmail } from "@shared/validation";
-import type { Officer, EmailLogEntry } from "@shared/schema";
+import type { Officer, EmailLogEntry, User } from "@shared/schema";
 import { PageHeader, Pill, EmptyState } from "@/components/bits";
 import { fmtDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ export default function EmailPage() {
   const { data: config } = useQuery<{ provider: string }>({ queryKey: ["/api/email/config"], enabled: allowed });
   const { data: log, isLoading } = useQuery<EmailLogEntry[]>({ queryKey: ["/api/email/log"], enabled: allowed });
   const { data: officers } = useQuery<Officer[]>({ queryKey: ["/api/officers"], enabled: allowed });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: allowed });
 
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
@@ -49,6 +50,15 @@ export default function EmailPage() {
     }
     return Array.from(byEmail.values()).sort((a, b) => a.label.localeCompare(b.label));
   }, [officers]);
+
+  // #14: low-stock report recipients are USER ACCOUNTS only (login accounts).
+  // List active users; those without a valid email on file are shown disabled.
+  const userRecipients = useMemo(() => {
+    return (users ?? [])
+      .filter((u) => u.active)
+      .map((u) => ({ email: (u.email ?? "").trim(), label: `${u.username} — ${u.name}`, hasEmail: isValidEmail(u.email) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [users]);
 
   const provider = config?.provider ?? "log";
 
@@ -150,12 +160,16 @@ export default function EmailPage() {
             </div>
             <div className="rounded-md border border-border p-3">
               <p className="flex items-center gap-1.5 text-sm font-medium"><PackageX className="h-4 w-4" /> Low-stock report</p>
-              <p className="mt-1 text-xs text-muted-foreground">Sends the list of items at or below par to a chosen recipient.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Sends the list of items at or below par to a chosen <strong>user account</strong>. Only login accounts with an email on file can receive it.</p>
               <div className="mt-2 flex flex-wrap gap-2">
                 <Select value={lowStockTo} onValueChange={setLowStockTo}>
-                  <SelectTrigger className="w-64" data-testid="select-lowstock-recipient"><SelectValue placeholder="Recipient with email…" /></SelectTrigger>
+                  <SelectTrigger className="w-72" data-testid="select-lowstock-recipient"><SelectValue placeholder={userRecipients.some((u) => u.hasEmail) ? "User account with email…" : "No user accounts have an email"} /></SelectTrigger>
                   <SelectContent>
-                    {recipients.map((r) => <SelectItem key={r.email} value={r.email}>{r.label} — {r.email}</SelectItem>)}
+                    {userRecipients.map((u) => (
+                      <SelectItem key={u.label} value={u.email} disabled={!u.hasEmail}>
+                        {u.label}{u.hasEmail ? ` — ${u.email}` : " — (no email on file)"}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <Button size="sm" variant="outline" onClick={sendLowStock} disabled={busy === "lowstock"} data-testid="button-send-lowstock">
