@@ -1,6 +1,7 @@
 import type { Officer } from "@shared/schema";
 import { newDoc, reportHeader, reportFooter, MARGIN, LINE, pageW, pageH, checkbox } from "./pdf";
 import { genStamp } from "./pdf";
+import { reportFilename } from "@/lib/format";
 
 /* ------------------------------------------------------------------ *
  * #21 Agency Equipment Inspection Form. One personnel, one page (paginates
@@ -93,36 +94,42 @@ export function buildInspectionForm(officer: Officer, lines: InspectionLine[]) {
     }
   }
 
-  // Signature blocks — ensure room, else new page
-  if (y > pageH(doc) - 55) { doc.addPage(); y = 24; }
-  y = pageH(doc) - 46;
+  // Signature + printed-name blocks — ensure room, else new page
+  if (y > pageH(doc) - 74) { doc.addPage(); y = 24; }
+  y = pageH(doc) - 66;
   doc.setDrawColor(120);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   const half = (w - MARGIN * 2 - 10) / 2;
 
-  // Personnel inspected
+  // Personnel inspected: signature + date, then printed name
   doc.line(MARGIN, y, MARGIN + half, y);
   doc.line(w - MARGIN - half, y, w - MARGIN, y);
   y += 4;
   doc.text("Signature — Personnel Inspected", MARGIN, y);
   doc.text("Date", w - MARGIN - half, y);
-  y += 16;
+  y += 12;
+  doc.line(MARGIN, y, MARGIN + half, y);
+  y += 4;
+  doc.text("Printed Name — Personnel Inspected", MARGIN, y);
+  y += 14;
 
-  // Supervisor conducting
+  // Supervisor conducting: signature + date, then printed name
   doc.line(MARGIN, y, MARGIN + half, y);
   doc.line(w - MARGIN - half, y, w - MARGIN, y);
   y += 4;
   doc.text("Signature — Supervisor Conducting Inspection", MARGIN, y);
   doc.text("Date", w - MARGIN - half, y);
+  y += 12;
+  doc.line(MARGIN, y, MARGIN + half, y);
+  y += 4;
+  doc.text("Printed Name — Supervisor Conducting Inspection", MARGIN, y);
 
   reportFooter(doc);
   return doc;
 }
 
-function slug(s: string) { return s.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, ""); }
-
 export function downloadInspectionForm(officer: Officer, lines: InspectionLine[]) {
   const { name } = personLabel(officer);
-  buildInspectionForm(officer, lines).save(`inspection_${slug(name)}_${Date.now()}.pdf`);
+  buildInspectionForm(officer, lines).save(reportFilename(`Equipment Inspection ${name}`, "pdf"));
 }
