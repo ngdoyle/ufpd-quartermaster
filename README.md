@@ -26,10 +26,12 @@
 | Username | Role | Permissions |
 | --- | --- | --- |
 | `admin` | Admin | Full read/write + user management |
-| `quartermaster` | Quartermaster | Read/write inventory, issuance, kits, email |
+| `quartermaster` | Quartermaster | Read/write inventory, issuance, kits, email + **Activity Log (read)** |
 | `auditor` | Auditor | Read-only (reports, audit, compliance) |
 
-> Passwords are stored as bcrypt hashes (cost factor 12) and are **not** committed to this repository. Seed passwords are supplied at seed time via the `QM_ADMIN_PW` / `QM_QUARTERMASTER_PW` / `QM_AUDITOR_PW` environment variables (if unset, a random password is generated and logged once). Rotate any live account from the in-app **User Accounts** page (admin only).
+> The app defines **five roles** — Administrator, Quartermaster, Supervisor, Officer, and Auditor — with an in-app **role capability matrix** (User Accounts page) that mirrors the server-enforced permissions. Quartermasters have read access to the Activity Log in addition to inventory/issuance/kit/email write access.
+
+> Passwords are stored as bcrypt hashes (cost factor 12) and are **not** committed to this repository. Seed passwords are supplied at seed time via the `QM_ADMIN_PW` / `QM_QUARTERMASTER_PW` / `QM_AUDITOR_PW` environment variables (if unset, a random password is generated and logged once). Accounts may carry an optional **email address**; rotate any live account from the in-app **User Accounts** page (admin only) via **self-service password change** or an **admin reset** (see §2 and §4).
 
 ---
 
@@ -39,13 +41,14 @@ UFPD Quartermaster manages the full lifecycle of department-issued equipment:
 
 - **Personnel** — officer records plus **businesses/vendors** (the `type` field is `person` or `business`); demo uses fake data. Form fields are validated client- and server-side, and phone numbers are normalized to `(XXX) XXX-XXXX`.
 - **Items / Inventory** — equipment with categories, quantities, status, and serial numbers. Supports **serialized units** (including dual-serial items such as vests), **sized clothing variants**, consumables, and a restock **"Add Existing"** flow. Firearm serials may be entered as placeholders and swapped for real ATF-registered serials later — see §8. Inventory can be **filtered by location**.
-- **Issuance & Returns** — a multi-line **issue cart** with a single signature, **kit-to-cart** loadouts, and **QR scan-to-cart** (reuses the Scan page scanner). Issue and return both produce **signed PDF receipts**, and an issuance receipt can optionally be **emailed** to the officer.
-- **Kits** — grouped equipment loadouts that can be issued as a unit.
-- **Reports** — full suite: **Inventory by Location**, **Issuance by time frame** (to whom / by whom), **Agency Inspection Form**, **Quarterly readiness** (Template A — Critical Incident armory checklist; Template B — Training Division operational readiness), a **custom report generator**, and **CSV exports** throughout.
-- **Users** — in-app account management with role editing and a **last-admin guard** (the final active administrator cannot be demoted or disabled), plus a **role capability matrix** showing what each role can do.
-- **Email** — provider-agnostic outbound email subsystem (compose, overdue-return reminders, low-stock report) shipping in **log-only mode**; every send is recorded in `email_log`. See §5.
+- **Issuance & Returns** — a multi-line **issue cart** and a **QR scan-to-cart** quick-issue flow (reuses the Scan page scanner). Both flows now **require** the recipient (**"Issue To"**, which may be an officer or a business/vendor), the **issued-by** person, the **issue location**, and a **recipient signature** before an issue can be completed; the same required fields are enforced server-side (`/api/issue` and `/api/issue/batch` reject incomplete submissions with `400`). Each cart line also records the item **condition at issuance** (per-line, using the standard condition vocabulary below). **Kit-to-cart** loadouts prompt for the kit **recipient** via a dedicated dialog; after an issue the cart offers a **keep-and-reassign or clear** choice so a loadout can be re-issued to the next recipient without rebuilding it. Issue and return both produce **signed PDF receipts** (receipt filename `YYYY-MM-DD_Items Issued_<Recipient Name>.pdf`), and an issuance receipt can optionally be **emailed** to the recipient.
+- **Kits** — grouped equipment loadouts that can be issued as a unit (with a recipient dialog at issue time — see above).
+- **Reports** — full suite: **Inventory by Location**, **Issuance by time frame** (to whom / by whom), **Agency Inspection Form** (with **printed-name blocks** beside each signature line — personnel inspected and supervisor conducting), **Quarterly readiness** (Template A — Critical Incident armory checklist; Template B — Training Division operational readiness), a **custom report generator**, and **CSV exports** throughout. All downloadable report artifacts (PDF + CSV) use a consistent filename `YYYY-MM-DD_<Report Title>.<ext>`.
+- **Condition vocabulary** — item condition is a fixed **7-value, ALL-CAPS** set used consistently across inventory, issuance, and returns: **NEW, LIKE NEW, GOOD, FAIR, DAMAGED, MAINTENANCE, RETIRED** (`shared/validation.ts`). Legacy values are normalized on read (e.g. `Poor` → `FAIR`).
+- **Users** — in-app account management with role editing, an optional **email address** per account, and a **last-admin guard** (the final active administrator cannot be demoted or disabled), plus a **role capability matrix** showing what each role can do. Passwords can be rotated two ways: **self-service change** (any signed-in user; minimum 12 characters; rotating revokes the user's other sessions) and an **admin reset** (admin only) that emails the account a **one-time temporary password** and forces a change at next sign-in. The temporary password is never stored, logged, or returned in the API response.
+- **Email** — provider-agnostic outbound email subsystem (compose, overdue-return reminders, low-stock report) shipping in **log-only mode**; every send is recorded in `email_log`. Low-stock report recipients are **user accounts that have an email on file** (not officers/vendors). A secured **weekly low-stock automation** endpoint (`POST /api/reports/low-stock/run`, authenticated by a `REPORT_TRIGGER_SECRET` bearer token) lets an external scheduler send the report to quartermaster-role users — intended cadence **Mondays 07:00 ET**. See §5.
 - **Audit Log** — append-only change tracking for accountability.
-- **Compliance page** — in-app data classification, CJIS scoping, and control status (UF Policy 12-011; CJIS noted as out of scope), plus a batch feature summary and UF-migration checklist.
+- **Compliance page** — in-app data classification, CJIS scoping, and control status (UF Policy 12-011; CJIS noted as out of scope), plus a **Roles & capabilities** section (the five roles and what each can do), an **Operational policies** section (condition vocabulary, required issuance fields, receipt/report naming, low-stock reporting to user accounts + the secured weekly trigger), a batch feature summary, and a UF-migration checklist.
 - **Branding** — UFPD badge branding on the login screen and app shell.
 - **CSV Bulk Import** — bulk-load **items** and **officers** from CSV templates.
 
@@ -101,9 +104,10 @@ The application was hardened and passed an independent security review (0 blocki
 - **Role-based access control (RBAC):**
   - Writes to officers/items/issuance/returns/inspections/kits require `admin` or `quartermaster`.
   - Email endpoints (`/api/email/*`) require `admin` or `quartermaster`.
-  - User-management endpoints (`/api/users/*`) require `admin`, and a **last-admin guard** prevents removing the final active administrator.
-  - Reads are available to any authenticated user.
-- **Password policy:** bcrypt cost 12; minimum length 12 characters on change-password.
+  - User-management endpoints (`/api/users/*`) require `admin`, and a **last-admin guard** prevents removing the final active administrator. The **admin password reset** endpoint (`POST /api/users/:id/reset-password`) is admin-only and rate-limited.
+  - **Activity Log read** (`GET /api/audit`) requires `admin`, `quartermaster`, `supervisor`, or `auditor`; plain officers are denied.
+  - Other reads are available to any authenticated user.
+- **Password policy:** bcrypt cost 12; minimum length 12 characters on change-password. **Self-service change** revokes the user's other active sessions. **Admin reset** issues a one-time temporary password (emailed to the account), sets a *force-change* flag so the user must set a new password at next sign-in, and never stores, logs, or returns the temporary password.
 - **IDOR protection:** change-password binds to the authenticated user's ID from the validated token, ignoring any client-supplied user ID.
 - **Login brute-force protection:** the login route is rate-limited (`express-rate-limit`).
 - **No secrets in the client bundle:** `SUPABASE_ANON_KEY`, `APP_DB_SECRET`, and all email provider credentials are server-side only and never `VITE_`-prefixed.
@@ -131,6 +135,7 @@ The application was hardened and passed an independent security review (0 blocki
 | `SSO_HEADER_UID` | No | `REMOTE_USER` | Request header carrying the authenticated user id when `AUTH_MODE=sso` (e.g. `REMOTE_USER`, `eppn`, `uid`, `glid`). |
 | `PORT` | No | `5000` | Listening port. |
 | `QM_ADMIN_PW` / `QM_QUARTERMASTER_PW` / `QM_AUDITOR_PW` | No | — | Optional seed passwords for initial accounts. |
+| `REPORT_TRIGGER_SECRET` | If using the weekly automation | unset | Bearer secret for the `POST /api/reports/low-stock/run` weekly low-stock trigger. Compared in constant time; the endpoint returns `500` if unset and `401` on a missing/wrong token. Server-side only. |
 | `EMAIL_PROVIDER` | No | `log` | Outbound email adapter: `log` (record only, never delivers), `resend`, or `smtp`. |
 | `RESEND_API_KEY` | If `resend` | — | API key for the Resend HTTP API. |
 | `EMAIL_FROM` | If `resend`/`smtp` | — | From address for outbound mail. |
@@ -142,7 +147,7 @@ The application was hardened and passed an independent security review (0 blocki
 
 > **Email subsystem:** the app ships in **log-only mode** — every message (issuance receipts, overdue-return reminders, low-stock reports, ad-hoc compose) is recorded in the `email_log` table but **not delivered** until a provider is configured. Switching to UF department SMTP after server migration is **config-only** — set `EMAIL_PROVIDER=smtp` plus the `SMTP_*` and `EMAIL_FROM` variables; no code changes are required. `resend` is available as an alternative HTTP-API provider.
 
-> **Note:** `DB_ENCRYPTION_KEY` is no longer used by the running application. Storage moved from an encrypted local SQLite file to Supabase-managed PostgreSQL; the variable survives only in the legacy SQLite-era utility scripts (see §9).
+> **Note:** `DB_ENCRYPTION_KEY` is no longer used. Storage moved from an encrypted local SQLite file to Supabase-managed PostgreSQL, and the utility scripts have been ported off SQLite (see §9), so the variable is fully retired.
 
 ---
 
@@ -208,21 +213,24 @@ NODE_ENV=production node dist/index.cjs
 
 ### Firearm serial numbers (placeholder → real swap)
 The workflow supports entering placeholder serials now and swapping in real ATF-registered serials later:
-- `scripts/swap-serials.ts` — maps placeholder serials to real ones. **Legacy (SQLite-era)** — see §9; needs porting to the Supabase backend before use against the current database.
-- `scripts/serial-map.example.csv` — example mapping file (placeholder,real).
+- `scripts/swap_serials.ts` — maps placeholder/old serials to real ones against the Supabase backend (see §9). Runs `--dry-run` to preview and takes `--env <path>` to target dev vs. prod.
+- `scripts/serial_map.example.csv` — example mapping file (header `old_serial,new_serial`; the legacy `placeholder,real` header is also accepted).
 
 ---
 
 ## 9. Utility Scripts (`scripts/`)
 
+All TypeScript admin scripts talk to Supabase over PostgREST and read connection config from an **env file selected with `--env <path>` (default `.env.dev`)** — point `--env` at a prod env file to run against production. Each requires `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `APP_DB_SECRET`, and each supports `--help`.
+
 | Script | Purpose |
 | --- | --- |
-| `normalize-phones.ts` | One-time #19 data migration: reads `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`APP_DB_SECRET`, normalizes any officer phone with exactly 10 digits to `(XXX) XXX-XXXX`, patches only changed rows, leaves non-conforming numbers untouched, and prints a summary. (Supabase-era.) |
+| `_pg.ts` | Shared helper module (not run directly): argument/env-file parsing and `pgSelect`/`pgPatch`/`pgDelete`/`pgCount` PostgREST wrappers used by the admin scripts below. |
+| `normalize-phones.ts` | One-time data migration: reads `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`APP_DB_SECRET`, normalizes any officer phone with exactly 10 digits to `(XXX) XXX-XXXX`, patches only changed rows, leaves non-conforming numbers untouched, and prints a summary. (Supabase-era.) |
 | `migrate_data_to_supabase.ts` | One-shot loader that copies data into Supabase from a JSON backup dir (`--dir`) or a legacy SQLCipher `data.db` (`--db`), preserving IDs and advancing sequences; `--wipe` truncates first. (Supabase-era.) |
-| `serial-map.example.csv` | Example serial mapping CSV (placeholder,real). |
-| `swap-serials.ts` | Swap placeholder serials for real ones (dry-run default, `--apply`, auto-backup). **Legacy SQLite-era** — targets an encrypted `data.db`; needs porting to Supabase. |
-| `set-password.ts` | Rotate account passwords directly in the database. **Legacy SQLite-era** — targets an encrypted `data.db`; prefer the in-app User Accounts page against the current backend. |
-| `clean-slate.ts` | Wipe operational tables (items, officers, issuance, etc.) while preserving user accounts. **Legacy SQLite-era** — targets the old `db` handle; use the `truncate_all()` RPC / a `--wipe` reload against Supabase instead. |
+| `serial_map.example.csv` | Example serial mapping CSV (header `old_serial,new_serial`). |
+| `swap_serials.ts` | Swap old/placeholder serials for real ones on `item_units` (Supabase). Usage: `npx tsx scripts/swap_serials.ts <map.csv> [--dry-run] [--env <path>]`; batch-fetches units (no N+1) and reports swapped / not-found / already-exists per row. |
+| `set_password.ts` | Set/reset a user account password (Supabase). Usage: `npx tsx scripts/set_password.ts --user <username> [--password <pw>] [--no-force-change] [--env <path>]`; hashes with bcrypt cost 12, sets `mustChangePassword` unless `--no-force-change`, generates a strong 16-char password if none supplied, and never prints the hash. |
+| `clean_slate.ts` | Wipe **transactional** data only (Supabase): deletes `assignments`/`audit_log`/`email_log` and resets issued/assigned `item_units` to in-stock; preserves users, officers, items, variants, and kits. Usage: `npx tsx scripts/clean_slate.ts --confirm WIPE [--env <path>]` (or `--dry-run`); takes a full JSON backup of all 10 tables first and aborts if any backup fails. Stock quantities are **not** restored. |
 | `sync.sh` | Convenience helper that commits and pushes the working tree to the private GitHub repo. |
 
 ---
@@ -275,7 +283,7 @@ quartermaster/
 - **N+1 query patterns** on `/api/assignments` and `/api/kits` — related rows are fetched per parent rather than joined; fine at current data volume, worth batching if data grows.
 - **Generic error handler echoes exception messages** — API errors return the underlying message; acceptable for an internal tool but should be sanitized for a hostile-network deployment.
 - **Email throttling** — sends are covered by route rate-limiting but there is no per-user send quota.
-- Legacy SQLite-era utility scripts (`swap-serials.ts`, `set-password.ts`, `clean-slate.ts`) target the retired encrypted `data.db` and need porting to Supabase before use — see §9.
+- The former legacy SQLite-era utility scripts (`swap-serials.ts`, `set-password.ts`, `clean-slate.ts`) have now been **ported to Supabase/PostgREST** (`swap_serials.ts`, `set_password.ts`, `clean_slate.ts`, sharing `scripts/_pg.ts`) and select their target database via `--env` — see §9. The retired encrypted `data.db` is no longer used.
 
 ---
 
