@@ -55,9 +55,16 @@ export default function Scan() {
   const [officerId, setOfficerId] = useState("");
   const [unitId, setUnitId] = useState("");
   const [qty, setQty] = useState(1);
+  const [issuedBy, setIssuedBy] = useState(user?.name ?? "");
+  const [issuedLocation, setIssuedLocation] = useState("");
   const [signature, setSignature] = useState("");
   const [notes, setNotes] = useState("");
   const [issuing, setIssuing] = useState(false);
+  // #6: issued-by, issued-location and signature are all required.
+  const [triedIssue, setTriedIssue] = useState(false);
+  const missingIssuedBy = !issuedBy.trim();
+  const missingIssuedLocation = !issuedLocation.trim();
+  const missingSignature = !signature.trim();
 
   function resolve(raw: string) {
     const { id, sku } = parseScan(raw);
@@ -76,8 +83,11 @@ export default function Scan() {
       setOfficerId("");
       setUnitId("");
       setQty(1);
+      setIssuedBy(user?.name ?? "");
+      setIssuedLocation("");
       setSignature("");
       setNotes("");
+      setTriedIssue(false);
       stopCamera();
     } else {
       setMatch(null);
@@ -143,8 +153,10 @@ export default function Scan() {
       return toast({ title: "No serial in stock", description: "Add an available unit on the Inventory page first.", variant: "destructive" });
     if (matchIsUnique && inStockUnits.length > 0 && !unitId)
       return toast({ title: "Select a serial/unit to issue", variant: "destructive" });
-    if (!signature.trim())
-      return toast({ title: "Acknowledgement signature required", variant: "destructive" });
+    if (missingIssuedBy || missingIssuedLocation || missingSignature) {
+      setTriedIssue(true);
+      return toast({ title: "Complete the required fields", description: "Issued by, issued location and recipient signature are required.", variant: "destructive" });
+    }
     setIssuing(true);
     try {
       await apiRequest("POST", "/api/issue", {
@@ -152,6 +164,8 @@ export default function Scan() {
         officerId: Number(officerId),
         quantity: qty,
         itemUnitId: matchIsUnique && unitId ? Number(unitId) : null,
+        issuedBy: issuedBy.trim(),
+        issuedLocation: issuedLocation.trim(),
         signature: signature.trim(),
         notes: notes.trim() || undefined,
       });
@@ -341,8 +355,30 @@ export default function Scan() {
                       data-testid="input-qty"
                     />
                   </div>
+                  <div>
+                    <Label className="text-xs">Issued by <span className="text-destructive">*</span></Label>
+                    <Input
+                      value={issuedBy}
+                      onChange={(e) => setIssuedBy(e.target.value)}
+                      placeholder="Who is issuing this item"
+                      className="mt-1"
+                      data-testid="input-issued-by"
+                    />
+                    {triedIssue && missingIssuedBy && <p className="mt-1 text-xs text-destructive" data-testid="error-issued-by">Issued by is required.</p>}
+                  </div>
+                  <div>
+                    <Label className="text-xs">Issued location <span className="text-destructive">*</span></Label>
+                    <Input
+                      value={issuedLocation}
+                      onChange={(e) => setIssuedLocation(e.target.value)}
+                      placeholder="Given in person, locker #, front desk…"
+                      className="mt-1"
+                      data-testid="input-issued-location"
+                    />
+                    {triedIssue && missingIssuedLocation && <p className="mt-1 text-xs text-destructive" data-testid="error-issued-location">Issued location is required.</p>}
+                  </div>
                   <div className="sm:col-span-2">
-                    <Label className="text-xs">Acknowledgement signature (type full name)</Label>
+                    <Label className="text-xs">Acknowledgement signature (type full name) <span className="text-destructive">*</span></Label>
                     <Input
                       value={signature}
                       onChange={(e) => setSignature(e.target.value)}
@@ -350,6 +386,7 @@ export default function Scan() {
                       className="mt-1"
                       data-testid="input-signature"
                     />
+                    {triedIssue && missingSignature && <p className="mt-1 text-xs text-destructive" data-testid="error-signature">Recipient signature is required.</p>}
                   </div>
                   <div className="sm:col-span-2">
                     <Label className="text-xs">Notes (optional)</Label>

@@ -893,6 +893,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const officer = await storage.getOfficer(d.officerId);
       if (!officer) return res.status(404).json({ message: "Officer not found." });
 
+      // #6: issued-by, issued-location and recipient signature are required.
+      const missing: string[] = [];
+      if (!d.issuedBy?.trim()) missing.push("Issued by");
+      if (!d.issuedLocation?.trim()) missing.push("Issued location");
+      if (!d.signature?.trim()) missing.push("Recipient signature");
+      if (missing.length)
+        return res.status(400).json({ message: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required to complete an issuance.` });
+
       const plan = await planIssue(officer,
         [{ itemId: d.itemId, quantity: d.quantity, itemUnitId: d.itemUnitId, itemVariantId: d.itemVariantId }],
         { dueDate: d.dueDate, signature: d.signature, notes: d.notes, conditionOut: d.conditionOut, issuedBy: d.issuedBy, issuedLocation: d.issuedLocation });
