@@ -159,7 +159,11 @@ export function buildQuarterlyTemplateA(items: ItemWithStock[]) {
   y = drawInspectionTableHeader(doc, y);
 
   for (const section of INSPECTION_SECTIONS) {
-    const sectionItems = reportItems(items, section.category, section.subcategories);
+    const sectionItems = reportItems(
+      items,
+      section.category,
+      "subcategories" in section ? section.subcategories : undefined,
+    );
     if (y > pageH(doc) - 35) {
       doc.addPage();
       y = drawInspectionHeader(doc, period);
@@ -177,7 +181,9 @@ export function buildQuarterlyTemplateA(items: ItemWithStock[]) {
     }
   }
 
-  y = ensureReportSpace(doc, y, 26, () => {
+  // The paper form keeps the sign-off immediately below the table whenever
+  // possible. A reduced 17 mm block fits the common one-page live-data case.
+  y = ensureReportSpace(doc, y, 18, () => {
     doc.addPage();
     return drawInspectionHeader(doc, period);
   });
@@ -187,7 +193,7 @@ export function buildQuarterlyTemplateA(items: ItemWithStock[]) {
   doc.text("Inspection Completed by:", MARGIN, y);
   doc.setDrawColor(110);
   doc.line(MARGIN + 42, y + 0.5, pageW(doc) - MARGIN, y + 0.5);
-  y += 13;
+  y += 8;
   const signatureEnd = MARGIN + 70;
   doc.line(MARGIN, y, signatureEnd, y);
   doc.line(pageW(doc) - MARGIN - 62, y, pageW(doc) - MARGIN, y);

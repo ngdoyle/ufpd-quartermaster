@@ -72,7 +72,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function SidebarInner() {
+function SidebarInner({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
       <div className="flex items-center gap-2.5 px-5 py-5">
@@ -83,7 +83,7 @@ function SidebarInner() {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto py-2">
-        <NavLinks />
+        <NavLinks onNavigate={onNavigate} />
       </div>
       <div className="px-5 py-3 text-[11px] text-sidebar-foreground/40 border-t border-sidebar-border">
         UFPD · v1.0
@@ -110,7 +110,7 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="left" className="p-0 w-64 border-sidebar-border">
           <SheetTitle className="sr-only">Navigation</SheetTitle>
-          <SidebarInner />
+          <SidebarInner onNavigate={() => setOpen(false)} />
         </SheetContent>
       </Sheet>
 
