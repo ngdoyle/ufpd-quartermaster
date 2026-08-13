@@ -86,6 +86,8 @@ export default function Inventory() {
   const [type, setType] = useState("all");
   const [status, setStatus] = useState("all");
   const [loc, setLoc] = useState("all");
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [form, setForm] = useState<Partial<Item> | null>(null);
   const [attrs, setAttrs] = useState<Record<string, string>>({});
   const [qr, setQr] = useState<Item | null>(null);
@@ -142,9 +144,29 @@ export default function Inventory() {
       (type === "all" || i.type === type) &&
       (loc === "all" || i.location === loc) &&
       matchesStatus(i) &&
-      (!term || [i.name, i.sku, i.serialNumber, i.vendor, i.location].some((f) => f?.toLowerCase().includes(term)))
+      (!term || [i.name, i.category, i.subcategory, i.sku, i.serialNumber, i.vendor, i.location].some((f) => f?.toLowerCase().includes(term)))
     );
   }, [items, q, cat, type, status, loc]);
+
+  const sorted = useMemo(() => {
+    const compare = (a: InvItem, b: InvItem) => {
+      const av = sortKey === "onHand" ? a.onHand : a[sortKey];
+      const bv = sortKey === "onHand" ? b.onHand : b[sortKey];
+      const result = typeof av === "number" && typeof bv === "number"
+        ? av - bv
+        : String(av ?? "").localeCompare(String(bv ?? ""), undefined, { sensitivity: "base", numeric: true });
+      return sortDirection === "asc" ? result : -result;
+    };
+    return [...filtered].sort(compare);
+  }, [filtered, sortKey, sortDirection]);
+
+  function toggleSort(next: SortKey) {
+    if (next === sortKey) setSortDirection((direction) => direction === "asc" ? "desc" : "asc");
+    else {
+      setSortKey(next);
+      setSortDirection("asc");
+    }
+  }
 
   // Location filter: distinct, non-empty locations from loaded items, A→Z.
   const locationOptions = useMemo(() => {
@@ -296,7 +318,7 @@ export default function Inventory() {
 
       {isLoading ? (
         <div className="space-y-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-lg" />)}</div>
-      ) : filtered.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <EmptyState title="No items match" hint="Adjust filters or add a new item." />
       ) : (
         <>
@@ -306,16 +328,19 @@ export default function Inventory() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
-                    <th className="px-4 py-2.5 font-medium">Item</th>
-                    <th className="px-4 py-2.5 font-medium">Type</th>
-                    <th className="px-4 py-2.5 font-medium">Stock</th>
-                    <th className="px-4 py-2.5 font-medium">Location</th>
-                    <th className="px-4 py-2.5 font-medium">Status</th>
+                    <SortableHeader label="Item" sortKey="name" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Category" sortKey="category" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Subcategory" sortKey="subcategory" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Type" sortKey="type" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Stock" sortKey="onHand" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Condition" sortKey="condition" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Location" sortKey="location" current={sortKey} direction={sortDirection} onSort={toggleSort} />
+                    <SortableHeader label="Status" sortKey="status" current={sortKey} direction={sortDirection} onSort={toggleSort} />
                     <th className="px-4 py-2.5 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {filtered.map((i) => (
+                  {sorted.map((i) => (
                     <ItemRow key={i.id} item={i} editable={editable} onEdit={() => openEdit(i)} onQr={() => setQr(i)} onDelete={remove} onInspect={inspect} onSerials={() => setSerialsFor(i)} onSizes={() => setSizesFor(i)} />
                   ))}
                 </tbody>
@@ -325,7 +350,7 @@ export default function Inventory() {
 
           {/* Mobile cards */}
           <div className="space-y-2.5 md:hidden">
-            {filtered.map((i) => (
+            {sorted.map((i) => (
               <Card key={i.id} className="p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -747,7 +772,7 @@ function AddExistingDialog({ open, onOpenChange, items, actor }: {
 const ITEM_COLUMNS: ColumnSpec[] = [
   // --- shared / core columns (apply to every category) ---
   { header: "Name", example: "Glock 17 Gen5", note: "Required" },
-  { header: "Category", example: "Firearms", note: "Firearms | Ammunition | Uniforms | Less Lethal | Duty Gear | Ballistic Vests" },
+  { header: "Category", example: "Firearms", note: "Firearms | Firearms Accessories | Ammunition | Training Gear | Uniforms | Less Lethal | Duty Gear | Ballistic Vests" },
   { header: "Subcategory", example: "Handgun", note: "Must match the chosen Category" },
   { header: "Type", example: "unique", note: "consumable | returnable | unique | sized" },
   { header: "Return Behavior", example: "", note: "Sized items: returnable | consumable" },
@@ -869,13 +894,16 @@ function ItemRow({ item, editable, onEdit, onQr, onDelete, onInspect, onSerials,
       <td className="px-4 py-2.5">
         <div className="font-medium leading-tight">{item.name}</div>
         <div className="text-xs text-muted-foreground">
-          {[item.category, item.subcategory].filter(Boolean).join(" › ")}{item.serialNumber ? ` · SN ${item.serialNumber}` : item.sku ? ` · ${item.sku}` : ""}
+          {item.serialNumber ? `SN ${item.serialNumber}` : item.sku ? item.sku : ""}
           {summary ? ` · ${summary}` : ""}
           {item.expirationDate && <span className={exp != null && exp < 0 ? "text-destructive" : exp != null && exp <= 90 ? "text-chart-3" : ""}> · exp {fmtDate(item.expirationDate)}</span>}
         </div>
       </td>
+      <td className="px-4 py-2.5 text-muted-foreground">{item.category || "—"}</td>
+      <td className="px-4 py-2.5 text-muted-foreground">{item.subcategory || "—"}</td>
       <td className="px-4 py-2.5"><TypeBadge type={item.type} /></td>
       <td className="px-4 py-2.5"><StockPill item={item} /></td>
+      <td className="px-4 py-2.5 text-muted-foreground">{item.condition || "—"}</td>
       <td className="px-4 py-2.5 text-muted-foreground">{item.location || "—"}</td>
       <td className="px-4 py-2.5"><StatusCell item={item} /></td>
       <td className="px-4 py-2.5">
@@ -907,6 +935,25 @@ function ItemRow({ item, editable, onEdit, onQr, onDelete, onInspect, onSerials,
         </div>
       </td>
     </tr>
+  );
+}
+
+function SortableHeader({ label, sortKey, current, direction, onSort }: {
+  label: string; sortKey: SortKey; current: SortKey; direction: "asc" | "desc"; onSort: (key: SortKey) => void;
+}) {
+  const active = sortKey === current;
+  const Icon = active ? direction === "asc" ? ArrowUp : ArrowDown : ArrowUpDown;
+  return (
+    <th className="px-4 py-2.5 font-medium" aria-sort={active ? direction === "asc" ? "ascending" : "descending" : "none"}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className="inline-flex items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        data-testid={`sort-inventory-${sortKey}`}
+      >
+        {label}<Icon className={`h-3.5 w-3.5 ${active ? "text-foreground" : "text-muted-foreground/60"}`} aria-hidden="true" />
+      </button>
+    </th>
   );
 }
 
