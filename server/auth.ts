@@ -28,6 +28,11 @@ import type { User } from "@shared/schema";
  * ===================================================================== */
 
 const BCRYPT_ROUNDS = 12;
+const APP_ROLES = new Set(["admin", "quartermaster", "auditor"]);
+
+function isApplicationRole(role: unknown): boolean {
+  return APP_ROLES.has(String(role));
+}
 
 export const hashPassword = (plain: string) => bcrypt.hashSync(String(plain), BCRYPT_ROUNDS);
 export const isHashed = (stored: string) =>
@@ -72,7 +77,7 @@ class LocalAuthProvider implements AuthProvider {
     // Always run a verification step (even when the user is missing) to keep
     // response timing uniform and avoid leaking which usernames exist.
     const ok = user ? await verifyPassword(String(password ?? ""), user) : false;
-    if (!user || !ok || !user.active) {
+    if (!user || !ok || !user.active || !isApplicationRole(user.role)) {
       return { user: null, status: 401, message: "Invalid username or password." };
     }
     return { user, status: 200 };
@@ -100,7 +105,7 @@ class SsoAuthProvider implements AuthProvider {
       };
     }
     const user = await storage.getUserByUsername(gatorlink);
-    if (!user || !user.active) {
+    if (!user || !user.active || !isApplicationRole(user.role)) {
       // Authenticated upstream, but no provisioned/authorized local account.
       return {
         user: null,

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { apiRequest, setAuthToken, setUnauthorizedHandler } from "@/lib/queryClient";
 
-export type Role = "admin" | "quartermaster" | "supervisor" | "officer" | "auditor";
+export type Role = "admin" | "quartermaster" | "auditor";
 
 // UF System Security Policy requires re-authentication after 30 minutes or
 // less of inactivity. Sessions live only in memory (React state) — there is no
@@ -104,16 +104,14 @@ export const can = {
   manageOfficers: (r?: Role) => r === "admin" || r === "quartermaster",
   issueReturn: (r?: Role) => r === "admin" || r === "quartermaster",
   manageUsers: (r?: Role) => r === "admin",
-  viewReports: (r?: Role) => r === "admin" || r === "quartermaster" || r === "supervisor" || r === "auditor",
-  viewAudit: (r?: Role) => r === "admin" || r === "quartermaster" || r === "auditor" || r === "supervisor",
-  viewCompliance: (r?: Role) => r === "admin" || r === "auditor" || r === "supervisor",
+  viewReports: (r?: Role) => r === "admin" || r === "quartermaster" || r === "auditor",
+  viewAudit: (r?: Role) => r === "admin" || r === "quartermaster" || r === "auditor",
+  viewCompliance: (r?: Role) => r === "admin" || r === "auditor",
   email: (r?: Role) => r === "admin" || r === "quartermaster",
 };
 
 export const roleLabel: Record<Role, string> = {
   admin: "Administrator",
   quartermaster: "Quartermaster",
-  supervisor: "Supervisor",
-  officer: "Officer",
   auditor: "Auditor",
 };

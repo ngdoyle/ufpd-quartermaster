@@ -32,7 +32,7 @@ const CONTROLS: Control[] = [
   { control: "Session timeout", detail: "30-minute inactivity timeout enforced server-side.", status: "MET" },
   { control: "Audit logging", detail: "Append-only Activity Log records every transaction with user, action, and timestamp.", status: "MET" },
   { control: "Security headers", detail: "Helmet sets HSTS, frame, content-type, and referrer protections.", status: "MET" },
-  { control: "Role-based access control", detail: "Capability checks enforced client- and server-side across five roles (Administrator, Quartermaster, Supervisor, Officer, Auditor). Quartermasters and Auditors, in addition to Supervisors, have read access to the Activity Log.", status: "MET" },
+  { control: "Role-based access control", detail: "Capability checks are enforced client- and server-side across three roles (Administrator, Quartermaster, Auditor). Quartermasters and Auditors have read access to the Activity Log.", status: "MET" },
   { control: "Password policy", detail: "Self-service password change for every account; admin-initiated reset issues a one-time temporary password (emailed, never stored in clear) and forces a change at next sign-in. All password material is bcrypt-hashed.", status: "MET" },
   { control: "Encryption at rest", detail: "Supabase-managed Postgres with AES-256 encryption at rest (provider-managed). Moves to UF-managed hosting per the migration plan below.", status: "MET" },
   { control: "Single sign-on readiness", detail: "Pluggable auth layer with AUTH_MODE switch; GatorLink / Shibboleth drops in without code changes. Live SP registration remaining.", status: "PARTIAL" },
@@ -55,9 +55,7 @@ const BATCH_SUMMARY: { batch: string; items: string }[] = [
 const ROLES: { role: string; caps: string }[] = [
   { role: "Administrator", caps: "Full access — user accounts and password resets, inventory, issue/return, reports, email, and the Activity Log." },
   { role: "Quartermaster", caps: "Inventory, personnel, issue/return, kits, reports, and outbound email. Read access to the Activity Log (audit)." },
-  { role: "Supervisor", caps: "Read-only oversight — reports, the Activity Log, and this compliance view. No inventory or issuance changes." },
   { role: "Auditor", caps: "Read-only assurance — reports, the Activity Log, and this compliance view." },
-  { role: "Officer", caps: "Self-service view of equipment currently issued to them; no management capabilities." },
 ];
 
 // Operational policies established across Batches 5–7.

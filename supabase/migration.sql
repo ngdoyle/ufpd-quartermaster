@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS users (
   "username"           text NOT NULL,
   "password"           text NOT NULL,
   "name"               text NOT NULL,
-  "role"               text NOT NULL DEFAULT 'officer',
+  "role"               text NOT NULL DEFAULT 'auditor',
   "officerId"          integer REFERENCES officers("id") ON DELETE SET NULL,
   "mustChangePassword" boolean NOT NULL DEFAULT false,
   "active"             boolean NOT NULL DEFAULT true

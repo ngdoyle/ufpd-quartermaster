@@ -5,16 +5,16 @@ import { z } from "zod";
 /* ------------------------------------------------------------------ */
 /* Users — login accounts with role-based access                       */
 /* ------------------------------------------------------------------ */
-// Roles: admin | quartermaster | supervisor | officer | auditor
+// Roles: admin | quartermaster | auditor
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   name: text("name").notNull(),
-  role: text("role").notNull().default("officer"),
+  role: text("role").notNull().default("auditor"),
   // optional contact email — used for admin password resets (Batch 5)
   email: text("email"),
-  // optional link to a personnel record (for officer self-service)
+  // optional link to a personnel record (retained for historical account linkage)
   officerId: integer("officer_id"),
   mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(false),
   active: integer("active", { mode: "boolean" }).notNull().default(true),

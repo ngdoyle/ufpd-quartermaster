@@ -21,6 +21,7 @@ import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 // the server — not just the UI — is the authorization boundary.
 const writeGuard = requireRole("admin", "quartermaster");
 const adminGuard = requireRole("admin");
+const APP_ROLES = new Set(["admin", "quartermaster", "auditor"]);
 
 // Re-export so existing importers keep working after the auth refactor.
 export { hashPassword };
@@ -329,11 +330,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/users", adminGuard, async (req, res) => {
     try {
       const data = insertUserSchema.parse(req.body);
+      const role = data.role ?? "auditor";
+      if (!APP_ROLES.has(role)) return res.status(400).json({ message: "Role must be Administrator, Quartermaster, or Auditor." });
       if (data.email && !isValidEmail(data.email)) return res.status(400).json({ message: "Enter a valid email address." });
       const existing = await storage.getUserByUsername(data.username);
       if (existing) return res.status(400).json({ message: "Username already exists." });
       // Hash the password before persisting (never store plaintext).
-      const u = await storage.createUser({ ...data, password: hashPassword(data.password) });
+      const u = await storage.createUser({ ...data, role, password: hashPassword(data.password) });
       await audit("create_user", "user", u.id, `Created account ${u.username} (${u.role})`, req.body.actor);
       res.json(stripPw(u));
     } catch (e) { handleErr(e, res); }
@@ -343,6 +346,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // self-service change-password flow or the admin "Reset Password" endpoint.
     // Silently drop any password field so it can't be set here.
     const { actor, password: _ignored, ...patch } = req.body ?? {};
+    if (patch.role !== undefined && !APP_ROLES.has(String(patch.role))) {
+      return res.status(400).json({ message: "Role must be Administrator, Quartermaster, or Auditor." });
+    }
     if (patch.email !== undefined && patch.email !== null && patch.email !== "" && !isValidEmail(patch.email))
       return res.status(400).json({ message: "Enter a valid email address." });
     const before = await storage.getUser(Number(req.params.id));
@@ -1216,8 +1222,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   /* ----------------------------- AUDIT ---------------------------- */
   // Read-only activity trail. Restricted to roles that oversee operations —
-  // admin, quartermaster (Batch 5), supervisor, auditor. Officers are excluded.
-  app.get("/api/audit", requireRole("admin", "quartermaster", "supervisor", "auditor"), async (req, res) => {
+  // Administrators, quartermasters, and auditors have read access to the Activity Log.
+  app.get("/api/audit", requireRole("admin", "quartermaster", "auditor"), async (req, res) => {
     const limit = req.query.limit ? Number(req.query.limit) : 200;
     res.json(await storage.listAudit(limit));
   });

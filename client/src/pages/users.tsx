@@ -18,12 +18,12 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { Plus, ShieldCheck, Trash2, Pencil, Check, Minus, KeyRound } from "lucide-react";
 
-const ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
-const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", supervisor: "purple", officer: "gray", auditor: "amber" };
+const ROLES: Role[] = ["admin", "quartermaster", "auditor"];
+const roleTone: Record<string, any> = { admin: "red", quartermaster: "blue", auditor: "amber" };
 
 // Capability matrix — derived directly from the `can` guard functions (the same
 // source the server route guards mirror), so it can never drift from the truth.
-const CAP_ROLES: Role[] = ["admin", "quartermaster", "supervisor", "officer", "auditor"];
+const CAP_ROLES: Role[] = ["admin", "quartermaster", "auditor"];
 const CAPABILITIES: { label: string; check: (r: Role) => boolean }[] = [
   { label: "Manage users", check: (r) => can.manageUsers(r) },
   { label: "Issue / return", check: (r) => can.issueReturn(r) },
@@ -40,16 +40,16 @@ export default function Users() {
   const { toast } = useToast();
   const { data: users, isLoading } = useQuery<any[]>({ queryKey: ["/api/users"] });
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ username: "", name: "", role: "officer" as Role, password: "", email: "", mustChangePassword: true });
+  const [form, setForm] = useState({ username: "", name: "", role: "auditor" as Role, password: "", email: "", mustChangePassword: true });
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState({ username: "", name: "", role: "officer" as Role, email: "" });
+  const [editForm, setEditForm] = useState({ username: "", name: "", role: "auditor" as Role, email: "" });
   const [resettingId, setResettingId] = useState<number | null>(null);
 
   const isAdmin = can.manageUsers(user?.role);
 
   function openEdit(u: any) {
-    setEditForm({ username: u.username, name: u.name, role: u.role as Role, email: u.email ?? "" });
+    setEditForm({ username: u.username, name: u.name, role: ROLES.includes(u.role as Role) ? u.role as Role : "auditor", email: u.email ?? "" });
     setEditing(u);
   }
 
@@ -75,7 +75,7 @@ export default function Users() {
       await apiRequest("POST", "/api/users", { ...form, email: form.email.trim() || null, active: true, officerId: null, actor: user?.name });
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       toast({ title: "Account created" });
-      setCreating(false); setForm({ username: "", name: "", role: "officer", password: "", email: "", mustChangePassword: true });
+      setCreating(false); setForm({ username: "", name: "", role: "auditor", password: "", email: "", mustChangePassword: true });
     } catch (e: any) {
       toast({ title: "Failed", description: e.message?.replace(/^\d+:\s*/, ""), variant: "destructive" });
     } finally { setSaving(false); }
@@ -122,7 +122,7 @@ export default function Users() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Pill tone={roleTone[u.role]}>{roleLabel[u.role as Role]}</Pill>
+                  <Pill tone={roleTone[u.role] ?? "gray"}>{roleLabel[u.role as Role] ?? "No access"}</Pill>
                   <Pill tone={u.active ? "green" : "gray"}>{u.active ? "Active" : "Disabled"}</Pill>
                   <Button variant="outline" size="sm" onClick={() => openEdit(u)} data-testid={`button-edit-user-${u.id}`}><Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit</Button>
                   {isAdmin && (
@@ -219,7 +219,7 @@ export default function Users() {
       <Card className="mt-6 overflow-hidden" data-testid="card-capability-matrix">
         <div className="border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">Role capabilities</h2>
-          <p className="text-xs text-muted-foreground">What each role can do across all five roles. Reflects the capability checks the server route guards enforce. Officers additionally have self-service access to their own record.</p>
+          <p className="text-xs text-muted-foreground">What each role can do across the three application roles. Reflects the capability checks the server route guards enforce.</p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

@@ -29,7 +29,7 @@
 | `quartermaster` | Quartermaster | Read/write inventory, issuance, kits, email + **Activity Log (read)** |
 | `auditor` | Auditor | Read-only (reports, audit, compliance) |
 
-> The app defines **five roles** — Administrator, Quartermaster, Supervisor, Officer, and Auditor — with an in-app **role capability matrix** (User Accounts page) that mirrors the server-enforced permissions. Quartermasters have read access to the Activity Log in addition to inventory/issuance/kit/email write access.
+> The app defines **three roles** — Administrator, Quartermaster, and Auditor — with an in-app **role capability matrix** (User Accounts page) that mirrors the server-enforced permissions. Quartermasters and Auditors have read access to the Activity Log; Quartermasters additionally have inventory/issuance/kit/email write access.
 
 > Passwords are stored as bcrypt hashes (cost factor 12) and are **not** committed to this repository. Seed passwords are supplied at seed time via the `QM_ADMIN_PW` / `QM_QUARTERMASTER_PW` / `QM_AUDITOR_PW` environment variables (if unset, a random password is generated and logged once). Accounts may carry an optional **email address**; rotate any live account from the in-app **User Accounts** page (admin only) via **self-service password change** or an **admin reset** (see §2 and §4).
 
@@ -48,7 +48,7 @@ UFPD Quartermaster manages the full lifecycle of department-issued equipment:
 - **Users** — in-app account management with role editing, an optional **email address** per account, and a **last-admin guard** (the final active administrator cannot be demoted or disabled), plus a **role capability matrix** showing what each role can do. Passwords can be rotated two ways: **self-service change** (any signed-in user; minimum 12 characters; rotating revokes the user's other sessions) and an **admin reset** (admin only) that emails the account a **one-time temporary password** and forces a change at next sign-in. The temporary password is never stored, logged, or returned in the API response.
 - **Email** — provider-agnostic outbound email subsystem (compose, overdue-return reminders, low-stock report) shipping in **log-only mode**; every send is recorded in `email_log`. Low-stock report recipients are **user accounts that have an email on file** (not officers/vendors). A secured **weekly low-stock automation** endpoint (`POST /api/reports/low-stock/run`, authenticated by a `REPORT_TRIGGER_SECRET` bearer token) lets an external scheduler send the report to quartermaster-role users — intended cadence **Mondays 07:00 ET**. See §5.
 - **Audit Log** — append-only change tracking for accountability.
-- **Compliance page** — in-app data classification, CJIS scoping, and control status (UF Policy 12-011; CJIS noted as out of scope), plus a **Roles & capabilities** section (the five roles and what each can do), an **Operational policies** section (condition vocabulary, required issuance fields, receipt/report naming, low-stock reporting to user accounts + the secured weekly trigger), a batch feature summary, and a UF-migration checklist.
+- **Compliance page** — in-app data classification, CJIS scoping, and control status (UF Policy 12-011; CJIS noted as out of scope), plus a **Roles & capabilities** section (the three roles and what each can do), an **Operational policies** section (condition vocabulary, required issuance fields, receipt/report naming, low-stock reporting to user accounts + the secured weekly trigger), a batch feature summary, and a UF-migration checklist.
 - **Branding** — UFPD badge branding on the login screen and app shell.
 - **CSV Bulk Import** — bulk-load **items** and **officers** from CSV templates.
 
@@ -105,7 +105,7 @@ The application was hardened and passed an independent security review (0 blocki
   - Writes to officers/items/issuance/returns/inspections/kits require `admin` or `quartermaster`.
   - Email endpoints (`/api/email/*`) require `admin` or `quartermaster`.
   - User-management endpoints (`/api/users/*`) require `admin`, and a **last-admin guard** prevents removing the final active administrator. The **admin password reset** endpoint (`POST /api/users/:id/reset-password`) is admin-only and rate-limited.
-  - **Activity Log read** (`GET /api/audit`) requires `admin`, `quartermaster`, `supervisor`, or `auditor`; plain officers are denied.
+  - **Activity Log read** (`GET /api/audit`) requires `admin`, `quartermaster`, or `auditor`.
   - Other reads are available to any authenticated user.
 - **Password policy:** bcrypt cost 12; minimum length 12 characters on change-password. **Self-service change** revokes the user's other active sessions. **Admin reset** issues a one-time temporary password (emailed to the account), sets a *force-change* flag so the user must set a new password at next sign-in, and never stores, logs, or returns the temporary password.
 - **IDOR protection:** change-password binds to the authenticated user's ID from the validated token, ignoring any client-supplied user ID.
