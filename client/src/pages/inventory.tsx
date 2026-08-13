@@ -24,7 +24,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, QrCode, Pencil, Trash2, Download, Upload, Printer, ClipboardCheck, Package, Layers, Shirt } from "lucide-react";
+import { Plus, Search, QrCode, Pencil, Trash2, Download, Upload, Printer, ClipboardCheck, Package, Layers, Shirt, ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { BulkImport, type ColumnSpec } from "@/components/bulk-import";
 import { SerialUnitsDialog } from "@/components/serial-units-dialog";
 import { SizeVariantsDialog } from "@/components/size-variants-dialog";
@@ -40,6 +40,7 @@ import {
 type UnitCounts = { total: number; in_stock: number; issued: number; maintenance: number; retired: number };
 type VariantCounts = { total: number; sizes: { id: number; size: string; quantity: number; parLevel: number }[] };
 type InvItem = Item & { unitCounts?: UnitCounts; variantCounts?: VariantCounts; onHand: number; lowStock: boolean };
+type SortKey = "name" | "category" | "subcategory" | "type" | "onHand" | "condition" | "location" | "status";
 
 const blank = (): Partial<Item> => ({
   name: "", category: "", subcategory: "", type: "consumable", sku: "", serialNumber: "", size: "", color: "",

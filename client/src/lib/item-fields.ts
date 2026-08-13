@@ -8,7 +8,9 @@ import type { Item, Officer } from "@shared/schema";
 
 export const ITEM_CATEGORIES = [
   "Firearms",
+  "Firearms Accessories",
   "Ammunition",
+  "Training Gear",
   "Uniforms",
   "Less Lethal",
   "Duty Gear",
@@ -18,7 +20,9 @@ export const ITEM_CATEGORIES = [
 // Subcategory options per category.
 export const ITEM_SUBCATEGORIES: Record<string, readonly string[]> = {
   "Firearms": ["Handgun", "Rifle", "Shotgun (Less Lethal)", "40mm Grenade Launcher (Less Lethal)", "Simunitions", "Sniper Rifle"],
+  "Firearms Accessories": ["Attachments", "Suppressors"],
   "Ammunition": ["Handgun", "Rifle", "Shotgun", "40mm Grenade Launcher (Less Lethal)", "Simunitions", "Sniper Rifle"],
+  "Training Gear": ["VR Gear", "Inert Weapons", "Mats/Pads"],
   "Uniforms": ["Sworn Duty Uniforms", "Non-Sworn Duty Uniforms", "Uniform Accessories"],
   "Less Lethal": ["OC Spray", "Baton", "TASER", "TASER Cartridges"],
   "Duty Gear": ["Duty Belt Gear", "Vest Gear", "Traffic Gear", "Miscellaneous Gear"],
