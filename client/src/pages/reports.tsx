@@ -25,7 +25,7 @@ import { downloadByLocationPdf, exportByLocationCsv } from "@/lib/reports/by-loc
 import { downloadIssuancePdf, exportIssuanceCsv } from "@/lib/reports/issuance";
 import { downloadInspectionForm, type InspectionLine } from "@/lib/reports/inspection";
 import {
-  downloadQuarterlyTemplateA, downloadQuarterlyTemplateB, QUARTER_LABEL, type Quarter,
+  currentReportingPeriod, downloadQuarterlyTemplateA, downloadQuarterlyTemplateB,
 } from "@/lib/reports/quarterly";
 import {
   DATASETS, type Dataset, type CustomConfig, type DataBundle,
@@ -43,6 +43,7 @@ export default function Reports() {
 
   const ready = !!officers && !!items && !!assignments;
   const bundle: DataBundle = { items: items ?? [], assignments: assignments ?? [], officers: officers ?? [] };
+  const reportingPeriod = currentReportingPeriod();
 
   const itemOf = (id: number) => items?.find((i) => i.id === id);
   const officerOf = (id: number) => officers?.find((o) => o.id === id);
@@ -156,15 +157,17 @@ export default function Reports() {
         </ReportCard>
 
         <ReportCard icon={ShieldCheck} title="Quarterly Inspection Checklist"
-          desc="Critical Incident Equipment Inspection (armory) — Template A.">
-          <QuarterlyDialog title="Quarterly Inspection Checklist" ready={ready}
-            onGenerate={(q, y, id) => downloadQuarterlyTemplateA(bundle.items, q, y, id ?? "")} withInspId />
+          desc={`Critical Incident Equipment Inspection (armory) — ${reportingPeriod.label}.`}>
+          <Button size="sm" variant="outline" disabled={!ready} onClick={() => downloadQuarterlyTemplateA(bundle.items)} data-testid="button-quarterly-inspection-pdf">
+            <FileText className="mr-1.5 h-4 w-4" /> Generate PDF
+          </Button>
         </ReportCard>
 
         <ReportCard icon={ShieldCheck} title="Operational Readiness"
-          desc="Training Division operational readiness report — Template B.">
-          <QuarterlyDialog title="Operational Readiness" ready={ready}
-            onGenerate={(q, y) => downloadQuarterlyTemplateB(bundle.items, q, y)} />
+          desc={`Training Division readiness form — ${reportingPeriod.label}.`}>
+          <Button size="sm" variant="outline" disabled={!ready} onClick={() => downloadQuarterlyTemplateB(bundle.items)} data-testid="button-operational-readiness-pdf">
+            <FileText className="mr-1.5 h-4 w-4" /> Generate PDF
+          </Button>
         </ReportCard>
 
         <ReportCard icon={FileDown} title="Custom Report Generator"
@@ -364,61 +367,6 @@ function InspectionDialog({ officers, ready, onGenerate }: {
         <DialogFooter>
           <Button onClick={go} disabled={!sel || busy} data-testid="button-inspection-generate">
             <FileText className="mr-1.5 h-4 w-4" /> {busy ? "Generating…" : "Generate PDF"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/* ------------------------------- Quarterly ------------------------------- */
-
-function QuarterlyDialog({ title, ready, onGenerate, withInspId }: {
-  title: string; ready: boolean;
-  onGenerate: (quarter: Quarter, year: number, inspId?: string) => void; withInspId?: boolean;
-}) {
-  const now = new Date();
-  const [open, setOpen] = useState(false);
-  const [quarter, setQuarter] = useState<Quarter>((Math.floor(now.getMonth() / 3) + 1) as Quarter);
-  const [year, setYear] = useState<number>(now.getFullYear());
-  const [inspId, setInspId] = useState("");
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm" variant="outline" disabled={!ready} data-testid="button-quarterly-open"><FileText className="mr-1.5 h-4 w-4" /> Configure</Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>Quantities auto-fill from live inventory; unmatched rows print blank for handwriting.</DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label>Quarter</Label>
-              <Select value={String(quarter)} onValueChange={(v) => setQuarter(Number(v) as Quarter)}>
-                <SelectTrigger data-testid="select-quarter"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {([1, 2, 3, 4] as Quarter[]).map((q) => <SelectItem key={q} value={String(q)}>{QUARTER_LABEL[q]}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="q-year">Year</Label>
-              <Input id="q-year" type="number" value={year} onChange={(e) => setYear(Number(e.target.value))} data-testid="input-year" />
-            </div>
-          </div>
-          {withInspId && (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="q-inspid">Inspector ID (optional)</Label>
-              <Input id="q-inspid" value={inspId} onChange={(e) => setInspId(e.target.value)} placeholder="Leave blank for handwriting" data-testid="input-inspid" />
-            </div>
-          )}
-        </div>
-        <DialogFooter>
-          <Button onClick={() => { onGenerate(quarter, year, inspId); setOpen(false); }} data-testid="button-quarterly-generate">
-            <FileText className="mr-1.5 h-4 w-4" /> Generate PDF
           </Button>
         </DialogFooter>
       </DialogContent>

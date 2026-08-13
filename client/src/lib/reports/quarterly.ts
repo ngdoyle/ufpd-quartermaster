@@ -1,321 +1,391 @@
 import type { ItemWithStock } from "@shared/schema";
-import { newDoc, reportHeader, reportFooter, drawTable, sectionTitle, checkbox, MARGIN, LINE, pageW, pageH } from "./pdf";
+import { newDoc, reportFooter, checkbox, MARGIN, LINE, pageH, pageW } from "./pdf";
 import { reportFilename } from "@/lib/format";
-
-/* ==================================================================
- * #4 Quarterly readiness reports — BOTH templates.
- *
- * The field inventory of both forms is CONTRACTUAL (see
- * batch3_report_templates_notes.md): every listed section/row must
- * appear even when the app has no matching item. So both builders emit
- * the fixed row structure from the notes and AUTO-FILL quantities from
- * live inventory via keyword matching; unmatched rows render blank.
- *
- * ---- MAPPING ASSUMPTIONS (documented for user review) ----
- * The sample forms use agency-specific labels (Glock 45 MOS, P320RX,
- * LMT, Moss. 590 …) that do not match the demo inventory 1:1. Each fixed
- * row carries a keyword regex matched against item NAME (optionally
- * scoped by category). Quantity = sum of computed on-hand (onHand) over
- * matching items. Firearm counts for Template B use serialized unit
- * status: Assigned = issued units, Reserve = in-stock units.
- * Ammo "Duty" vs "Practice/Training" is keyword-classified
- * (duty | practice/fmj/frangible/training/sim). 12-gauge munitions in the
- * demo set are less-lethal (bean bag / breaching); with no clear duty vs
- * practice split, all 12ga is bucketed under Duty and Practice is left 0.
- * Rows with no matching inventory show a blank quantity for handwriting.
- * ================================================================== */
+import {
+  INSPECTION_SECTIONS,
+  OPERATIONAL_READINESS_WEAPON_GROUPS,
+} from "./quarterly-config";
 
 export type Quarter = 1 | 2 | 3 | 4;
-export const QUARTER_LABEL: Record<Quarter, string> = {
-  1: "Q1 (Jan–Mar)", 2: "Q2 (Apr–Jun)", 3: "Q3 (Jul–Sep)", 4: "Q4 (Oct–Dec)",
+
+const QUARTERS: Record<Quarter, { short: string; long: string }> = {
+  1: { short: "Q1 (Jan–Mar)", long: "Q1 (Jan-Mar)" },
+  2: { short: "Q2 (Apr–Jun)", long: "Q2 (Apr-Jun)" },
+  3: { short: "Q3 (Jul–Sep)", long: "Q3 (Jul-Sep)" },
+  4: { short: "Q4 (Oct–Dec)", long: "Q4 (Oct-Dec)" },
 };
 
-type FixedRow = { label: string; kw?: RegExp; cats?: string[] };
-type FixedSection = { title: string; rows: FixedRow[] };
-
-const AMMO = ["Ammunition"];
-const FIREARMS = ["Firearms", "Less Lethal"];
-const LL = ["Less Lethal"];
-
-// ---- Template A: fixed sections/rows (labels verbatim from the notes) ----
-const TEMPLATE_A: FixedSection[] = [
-  { title: "Firearms", rows: [
-    { label: "Glock 45 MOS", kw: /glock.*45/i, cats: FIREARMS },
-    { label: "P320RX (Simunition)", kw: /p320.*(rx|sim)/i, cats: FIREARMS },
-    { label: "P320SC", kw: /p320.*(sc|compact|carry)/i, cats: FIREARMS },
-    { label: "P365", kw: /p365/i, cats: FIREARMS },
-    { label: "LMT", kw: /\blmt\b/i, cats: FIREARMS },
-    { label: "SS 516", kw: /516/i, cats: FIREARMS },
-    { label: "SS MPX", kw: /mpx/i, cats: FIREARMS },
-    { label: "SS M400", kw: /m400/i, cats: FIREARMS },
-    { label: "Moss. 590 (Less Lethal)", kw: /590|mossberg/i, cats: FIREARMS },
-    { label: "Rem. 870 (Less Lethal)", kw: /870|remington/i, cats: FIREARMS },
-    { label: "40mm (Less Lethal)", kw: /40\s?mm|launcher|fn\s?303/i, cats: FIREARMS },
-    { label: "Sims Conversion Kits", kw: /conversion|sim.*kit/i, cats: FIREARMS },
-  ]},
-  { title: "Ammunition", rows: [
-    { label: "9mm Trng", kw: /9mm.*(trng|train|practice|fmj)/i, cats: AMMO },
-    { label: "9mm Frng", kw: /9mm.*(frng|frangible)/i, cats: AMMO },
-    { label: "9mm Duty", kw: /9mm.*(duty|hp)/i, cats: AMMO },
-    { label: ".223/5.56 Trn", kw: /(\.223|5\.56).*(trn|train|practice)/i, cats: AMMO },
-    { label: ".223/5.56 Duty", kw: /(\.223|5\.56).*duty/i, cats: AMMO },
-    { label: "12ga", kw: /12\s?ga/i, cats: AMMO },
-    { label: "308 Win", kw: /308/i, cats: AMMO },
-    { label: "Sims 9mm", kw: /(sim.*9mm|9mm.*(sim|marking))/i, cats: AMMO },
-    { label: "Sims .223", kw: /sim.*(\.223|223)/i, cats: AMMO },
-  ]},
-  { title: "Less Lethal", rows: [
-    { label: "ASP Batons", kw: /asp|baton/i, cats: LL },
-    { label: "Taser 7 Weapons", kw: /taser\s*7(?!.*(cartridge|batter))/i, cats: LL },
-    { label: "Taser 7 Cartridges (3.5/12)", kw: /taser.*cartridge/i, cats: LL },
-    { label: "Taser 7 Batteries", kw: /taser.*batter/i, cats: LL },
-    { label: "Active O/C Spray", kw: /(mk-?\d|o\/?c|oc)\s*spray/i, cats: LL },
-  ]},
-  { title: "Training Equipment", rows: [
-    { label: "Blue Gun Handguns", kw: /blue\s?gun.*(handgun|pistol)/i },
-    { label: "Blue Gun Rifles", kw: /blue\s?gun.*rifle/i },
-    { label: "Misc. rubber weapons", kw: /rubber/i },
-    { label: "Inert O/C Spray", kw: /inert/i },
-    { label: "Training Taser 7 Cartridges", kw: /(training.*taser|taser.*training)/i },
-  ]},
-  { title: "VR", rows: [
-    { label: "VR Head Set", kw: /vr.*head/i },
-    { label: "VR Hand Controllers", kw: /vr.*(hand|controller)/i },
-    { label: "VR Taser 7 Trainers", kw: /vr.*taser/i },
-    { label: "VR FA Trainers", kw: /vr.*(fa|firearm)/i },
-  ]},
-];
-
-function rowQty(items: ItemWithStock[], row: FixedRow): number | null {
-  if (!row.kw) return null;
-  const matches = items.filter((i) =>
-    (!row.cats || row.cats.includes(i.category)) && row.kw!.test(i.name));
-  if (matches.length === 0) return null;
-  return matches.reduce((s, i) => s + i.onHand, 0);
+/** The current reporting quarter, intentionally calculated at PDF generation. */
+export function currentReportingPeriod(date = new Date()): { quarter: Quarter; year: number; label: string } {
+  const quarter = (Math.floor(date.getMonth() / 3) + 1) as Quarter;
+  return { quarter, year: date.getFullYear(), label: `${QUARTERS[quarter].long} ${date.getFullYear()}` };
 }
 
-export function buildQuarterlyTemplateA(items: ItemWithStock[], quarter: Quarter, year: number, inspId: string) {
-  const doc = newDoc("portrait");
-  let y = reportHeader(doc,
-    "Quarterly Critical Incident Equipment Inspection Checklist",
-    "Equipment In Armory");
+export const QUARTER_LABEL: Record<Quarter, string> = {
+  1: QUARTERS[1].short,
+  2: QUARTERS[2].short,
+  3: QUARTERS[3].short,
+  4: QUARTERS[4].short,
+};
 
-  // Quarter selector row — active quarter marked with a filled box.
+type CountTriple = { total: number; assigned: number; reserve: number };
+
+function inStockQuantity(item: ItemWithStock): number {
+  // GET /api/items derives onHand from in-stock serialized units for unique
+  // items and from the inventory quantity for consumables.
+  return item.onHand;
+}
+
+function totalUnits(item: ItemWithStock): number {
+  if (item.type === "unique" && item.unitCounts) return item.unitCounts.total;
+  return item.quantity;
+}
+
+function issuedUnits(item: ItemWithStock): number {
+  if (item.type === "unique" && item.unitCounts) return item.unitCounts.issued;
+  return 0;
+}
+
+function reportItems(items: ItemWithStock[], category: string, subcategories?: readonly string[]) {
+  return items
+    .filter((item) => item.category === category && (!subcategories || subcategories.includes(item.subcategory ?? "")))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function rowLine(doc: any, y: number, label: string, left = MARGIN, right = pageW(doc) - MARGIN): number {
+  doc.setDrawColor(132);
+  doc.line(left, y, right, y);
+  return y + 5.1;
+}
+
+function ensureReportSpace(doc: any, y: number, needed: number, onPage: () => number): number {
+  return y + needed > pageH(doc) - 17 ? onPage() : y;
+}
+
+function drawQuarterMarker(doc: any, y: number, quarter: Quarter, compact = false): number {
+  const width = pageW(doc);
+  const names = compact
+    ? ["1st Quarter", "2nd Quarter", "3rd Quarter", "4th Quarter"]
+    : [QUARTERS[1].short, QUARTERS[2].short, QUARTERS[3].short, QUARTERS[4].short];
+  const gap = compact ? 44 : 42;
+  let x = compact ? 25 : MARGIN;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(compact ? 8.8 : 8.5);
+  names.forEach((label, index) => {
+    const active = index + 1 === quarter;
+    checkbox(doc, x, y, compact ? 5.2 : 4.5);
+    if (active) {
+      doc.setFillColor(26, 78, 126);
+      doc.rect(x + 1, y - (compact ? 3.3 : 2.8), compact ? 3.2 : 2.6, compact ? 3.2 : 2.6, "F");
+    }
+    doc.text(label, x + (compact ? 7 : 6), y);
+    if (compact) doc.text("Inspection", x + (compact ? 7 : 6), y + 5.7);
+    x += gap;
+  });
+  doc.setDrawColor(160);
+  doc.line(MARGIN, compact ? y + 9 : y + 4, width - MARGIN, compact ? y + 9 : y + 4);
+  return compact ? y + 14 : y + 8;
+}
+
+function drawInspectionHeader(doc: any, period: ReturnType<typeof currentReportingPeriod>): number {
+  const width = pageW(doc);
+  doc.setFillColor(222, 232, 244);
+  doc.rect(MARGIN, 12, width - MARGIN * 2, 12, "F");
+  doc.setDrawColor(70);
+  doc.rect(MARGIN, 12, width - MARGIN * 2, 12);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text("UFPD Quarterly Critical Incident Equipment Inspection Checklist", width / 2, 19, { align: "center" });
+  doc.setFontSize(8.5);
+  doc.text("Equipment In Armory", width / 2, 23, { align: "center" });
+  doc.setFontSize(9);
+  doc.text(period.label, MARGIN, 31);
+  return drawQuarterMarker(doc, 37, period.quarter);
+}
+
+function drawInspectionTableHeader(doc: any, y: number): number {
+  const width = pageW(doc);
+  const xs = [MARGIN, MARGIN + 30, width - MARGIN - 32, width - MARGIN];
+  doc.setFillColor(205, 220, 237);
+  doc.rect(MARGIN, y - 4.5, width - MARGIN * 2, 6.4, "F");
+  doc.setDrawColor(105);
+  doc.rect(MARGIN, y - 4.5, width - MARGIN * 2, 6.4);
+  xs.slice(1, -1).forEach((x) => doc.line(x, y - 4.5, x, y + 1.9));
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.text("Inspector ID", xs[0] + 1.5, y);
+  doc.text("Item Name", xs[1] + 1.5, y);
+  doc.text("Quantity On Hand", xs[3] - 1.5, y, { align: "right" });
+  return y + 1.9;
+}
+
+function drawInspectionRow(doc: any, y: number, name: string, qty: number): number {
+  const width = pageW(doc);
+  const xs = [MARGIN, MARGIN + 30, width - MARGIN - 32, width - MARGIN];
+  const wrap = doc.splitTextToSize(name, xs[2] - xs[1] - 3);
+  const height = Math.max(5.1, wrap.length * 3.7 + 1.4);
+  doc.setDrawColor(180);
+  doc.rect(MARGIN, y, width - MARGIN * 2, height);
+  xs.slice(1, -1).forEach((x) => doc.line(x, y, x, y + height));
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8.5);
+  doc.text(wrap, xs[1] + 1.5, y + 3.6);
+  doc.setFont("helvetica", "bold");
+  doc.text(String(qty), xs[3] - 1.5, y + 3.6, { align: "right" });
+  return y + height;
+}
+
+function drawInspectionSection(doc: any, y: number, title: string): number {
+  const width = pageW(doc);
+  doc.setFillColor(170, 199, 229);
+  doc.rect(MARGIN, y, width - MARGIN * 2, 5.5, "F");
+  doc.setDrawColor(105);
+  doc.rect(MARGIN, y, width - MARGIN * 2, 5.5);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(9);
-  const quarters: Quarter[] = [1, 2, 3, 4];
-  let qx = MARGIN;
-  quarters.forEach((q) => {
-    if (q === quarter) { doc.setFillColor(60, 60, 60); doc.rect(qx, y - 3.2, 3.6, 3.6, "F"); }
-    checkbox(doc, qx, y, 3.6);
-    doc.text(QUARTER_LABEL[q], qx + 5.5, y);
-    qx += 44;
-  });
-  y += LINE;
-  doc.text(`Year: ${year}`, MARGIN, y);
-  doc.text(`Insp. ID: ${inspId || "____________"}`, MARGIN + 60, y);
-  y += LINE + 1;
+  doc.text(title, width / 2, y + 3.75, { align: "center" });
+  return y + 5.5;
+}
 
-  const cols = [
-    { header: "Insp. ID", width: 22 },
-    { header: "Item", width: 120 },
-    { header: `Qty — ${QUARTER_LABEL[quarter]}`, width: 40, align: "right" as const },
-  ];
+/**
+ * Quarterly Critical Incident Equipment Inspection Checklist.
+ * All rows are live dynamic inventory rows. It intentionally renders no
+ * inspector value: Inspector ID stays blank for the handwritten workflow.
+ */
+export function buildQuarterlyTemplateA(items: ItemWithStock[]) {
+  const period = currentReportingPeriod();
+  const doc = newDoc("portrait");
+  let y = drawInspectionHeader(doc, period);
+  y = drawInspectionTableHeader(doc, y);
 
-  for (const section of TEMPLATE_A) {
-    if (y > pageH(doc) - 30) { doc.addPage(); y = 20; }
-    y = sectionTitle(doc, y + 1, section.title);
-    const rows = section.rows.map((r) => {
-      const q = rowQty(items, r);
-      return [inspId || "", r.label, q === null ? "" : String(q)];
-    });
-    y = drawTable(doc, y, cols, rows, { headerFill: true }) + 3;
+  for (const section of INSPECTION_SECTIONS) {
+    const sectionItems = reportItems(items, section.category, section.subcategories);
+    if (y > pageH(doc) - 35) {
+      doc.addPage();
+      y = drawInspectionHeader(doc, period);
+      y = drawInspectionTableHeader(doc, y);
+    }
+    y = drawInspectionSection(doc, y, section.title);
+    for (const item of sectionItems) {
+      if (y > pageH(doc) - 25) {
+        doc.addPage();
+        y = drawInspectionHeader(doc, period);
+        y = drawInspectionTableHeader(doc, y);
+        y = drawInspectionSection(doc, y, `${section.title} (continued)`);
+      }
+      y = drawInspectionRow(doc, y, item.name, inStockQuantity(item));
+    }
   }
 
-  // Sign-off block
-  if (y > pageH(doc) - 34) { doc.addPage(); y = 20; }
-  y += 4;
-  const w = pageW(doc);
+  y = ensureReportSpace(doc, y, 26, () => {
+    doc.addPage();
+    return drawInspectionHeader(doc, period);
+  });
+  y += 5;
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.text("Inspection Completed by:", MARGIN, y);
-  doc.setDrawColor(120);
-  doc.line(MARGIN + 46, y + 0.5, w - MARGIN, y + 0.5);
-  y += LINE + 6;
-  doc.text("Training Commander Signature:", MARGIN, y);
-  doc.line(MARGIN + 56, y + 0.5, w - MARGIN, y + 0.5);
-  y += LINE + 6;
-  doc.text("Date Signed:", MARGIN, y);
-  doc.line(MARGIN + 26, y + 0.5, MARGIN + 100, y + 0.5);
+  doc.setDrawColor(110);
+  doc.line(MARGIN + 42, y + 0.5, pageW(doc) - MARGIN, y + 0.5);
+  y += 13;
+  const signatureEnd = MARGIN + 70;
+  doc.line(MARGIN, y, signatureEnd, y);
+  doc.line(pageW(doc) - MARGIN - 62, y, pageW(doc) - MARGIN, y);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.text("Training Commander Signature", MARGIN, y + 4.5);
+  doc.text("Date Signed", pageW(doc) - MARGIN - 62, y + 4.5);
 
   reportFooter(doc);
   return doc;
 }
 
-export function downloadQuarterlyTemplateA(items: ItemWithStock[], quarter: Quarter, year: number, inspId: string) {
-  buildQuarterlyTemplateA(items, quarter, year, inspId).save(reportFilename(`Quarterly Inspection Checklist Q${quarter} ${year}`, "pdf"));
-}
-
-/* ----------------------------- Template B ----------------------------- */
-
-// Firearm classification for Template B (name keywords, category Firearms).
-const RIFLE = /rifle|ddm4|at308|carbine|\bm4\b|m400|lmt|mpx|516|\.308|5\.56|\.223|daniel\s?defense|accuracy/i;
-const HANDGUN = /glock|pistol|handgun|p320|p365|p226|p229|p365/i;
-const SHOTGUN = /shotgun|870|590|mossberg|remington|12\s?ga/i;
-
-function firearmCounts(items: ItemWithStock[], kw: RegExp): { assigned: number; reserve: number } {
-  const fa = items.filter((i) => i.category === "Firearms" && kw.test(i.name));
-  let assigned = 0, reserve = 0;
-  for (const i of fa) {
-    if (i.unitCounts && i.unitCounts.total > 0) { assigned += i.unitCounts.issued; reserve += i.unitCounts.in_stock; }
-    else { reserve += i.onHand; }
-  }
-  return { assigned, reserve };
-}
-
-function ammoQty(items: ItemWithStock[], caliber: RegExp, cls: "duty" | "practice"): number {
-  const dutyRe = /duty|hp|breaching|lethal(?!\s*less)/i;
-  const pracRe = /practice|fmj|frangible|training|trng|sim|marking|bean\s?bag/i;
+function groupCounts(items: ItemWithStock[], names: readonly string[]): CountTriple {
+  const nameSet = new Set(names);
   return items
-    .filter((i) => i.category === "Ammunition" && caliber.test(i.name) &&
-      (cls === "duty" ? dutyRe.test(i.name) && !pracRe.test(i.name) : pracRe.test(i.name)))
-    .reduce((s, i) => s + i.onHand, 0);
+    .filter((item) => item.category === "Firearms" && nameSet.has(item.name))
+    .reduce<CountTriple>((counts, item) => ({
+      total: counts.total + totalUnits(item),
+      assigned: counts.assigned + issuedUnits(item),
+      reserve: counts.reserve + inStockQuantity(item),
+    }), { total: 0, assigned: 0, reserve: 0 });
+}
+
+function ammoClass(name: string): "duty" | "practice" | null {
+  const n = name.toLowerCase();
+  // Sim rounds, less-lethal bean bags, and breaching rounds appear on the
+  // inspection checklist only; none belongs on Operational Readiness.
+  if (/\bsim(?:unition|s)?\b|marking|bean\s*bag|breaching/.test(n)) return null;
+  if (/frangible/.test(n)) return "practice";
+  if (/\bduty\b/.test(n)) return "duty";
+  if (/\bpractice\b/.test(n)) return "practice";
+  return null;
+}
+
+function ammunitionQuantity(items: ItemWithStock[], caliber: RegExp, bucket: "duty" | "practice"): number {
+  return items
+    .filter((item) => item.category === "Ammunition" && caliber.test(item.name) && ammoClass(item.name) === bucket)
+    .reduce((sum, item) => sum + inStockQuantity(item), 0);
 }
 
 function suppressorCounts(items: ItemWithStock[]): { inventoried: number; assigned: number } {
-  const s = items.filter((i) => /suppress|silencer/i.test(i.name));
-  let inventoried = 0, assigned = 0;
-  for (const i of s) {
-    inventoried += i.onHand;
-    if (i.unitCounts) assigned += i.unitCounts.issued;
-  }
-  return { inventoried, assigned };
+  return reportItems(items, "Firearms Accessories", ["Suppressors"])
+    .reduce((counts, item) => ({
+      inventoried: counts.inventoried + totalUnits(item),
+      assigned: counts.assigned + issuedUnits(item),
+    }), { inventoried: 0, assigned: 0 });
 }
 
-export function buildQuarterlyTemplateB(items: ItemWithStock[], quarter: Quarter, year: number) {
-  const doc = newDoc("portrait");
-  const w = pageW(doc);
-
-  // Custom header (agency form heading, not the generic report header).
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text("University of Florida Police Department", w / 2, 18, { align: "center" });
-  doc.setFontSize(11);
-  doc.text("TRAINING DIVISION", w / 2, 25, { align: "center" });
-  doc.text(`OPERATIONAL READINESS ${year}`, w / 2, 32, { align: "center" });
-  doc.setFontSize(8);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(120);
-  doc.text(`Generated ${new Date().toLocaleString("en-US")}`, w - MARGIN, 12, { align: "right" });
-  doc.setTextColor(0);
-  doc.setDrawColor(170);
-  doc.line(MARGIN, 35, w - MARGIN, 35);
-  let y = 42;
-
-  // Quarter checkboxes
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  const qlabels = ["1st", "2nd", "3rd", "4th"];
-  let qx = MARGIN;
-  qlabels.forEach((lab, idx) => {
-    const q = (idx + 1) as Quarter;
-    if (q === quarter) { doc.setFillColor(60, 60, 60); doc.rect(qx, y - 3.2, 3.6, 3.6, "F"); }
-    checkbox(doc, qx, y, 3.6);
-    doc.text(`${lab} Quarter Inspection`, qx + 5.5, y);
-    qx += 46;
-  });
-  y += LINE + 3;
-
-  // Firearm sections
-  const faSections: { title: string; kw: RegExp }[] = [
-    { title: "Rifles", kw: RIFLE },
-    { title: "Departmental Handguns", kw: HANDGUN },
-    { title: "Departmental Shotguns", kw: SHOTGUN },
-  ];
-  for (const s of faSections) {
-    const { assigned, reserve } = firearmCounts(items, s.kw);
-    y = sectionTitle(doc, y + 1, s.title);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9);
-    // Inspected (blank), Number Assigned, Number in Reserve
-    doc.text("Inspected:", MARGIN, y); doc.setDrawColor(120); doc.line(MARGIN + 20, y + 0.5, MARGIN + 50, y + 0.5);
-    doc.text(`Number Assigned: ${assigned}`, MARGIN + 60, y);
-    doc.text(`Number in Reserve: ${reserve}`, MARGIN + 120, y);
-    y += LINE;
-    y = commentsLine(doc, y);
-    y += 2;
-  }
-
-  // Deficiencies block
-  y = sectionTitle(doc, y + 1, "List deficiencies:");
-  for (let i = 0; i < 3; i++) { doc.setDrawColor(150); doc.line(MARGIN, y, w - MARGIN, y); y += LINE + 1; }
-
-  // ---- Page 2: ammo inventories + suppressors + signatures ----
-  doc.addPage();
-  y = 20;
-  doc.setFont("helvetica", "bold");
+function drawReadinessHeader(doc: any, period: ReturnType<typeof currentReportingPeriod>): number {
+  const width = pageW(doc);
+  doc.setFont("times", "bold");
+  doc.setFontSize(12.5);
+  doc.text("University of Florida Police Department", width / 2, 17, { align: "center" });
   doc.setFontSize(12);
-  doc.text(`Operational Readiness ${year} — Inventory (cont.)`, w / 2, y, { align: "center" });
-  doc.setDrawColor(170); doc.line(MARGIN, y + 4, w - MARGIN, y + 4);
-  y += 12;
+  doc.text("TRAINING DIVISION", width / 2, 25, { align: "center" });
+  doc.setFontSize(13);
+  doc.text(`OPERATIONAL READINESS ${period.year}`, width / 2, 33, { align: "center" });
+  return drawQuarterMarker(doc, 44, period.quarter, true);
+}
 
-  const ammo: { title: string; caliber: RegExp }[] = [
-    { title: "9mm Ammunition Inventory", caliber: /9mm/i },
-    { title: "5.56 / .223 Inventory", caliber: /5\.56|\.223/i },
-    { title: "12-Gauge Inventory", caliber: /12\s?ga/i },
-  ];
-  for (const a of ammo) {
-    y = sectionTitle(doc, y + 1, a.title);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-    doc.text(`Duty: ${ammoQty(items, a.caliber, "duty")}`, MARGIN, y);
-    doc.text(`Practice: ${ammoQty(items, a.caliber, "practice")}`, MARGIN + 60, y);
-    y += LINE;
-    y = commentsLine(doc, y);
-    y += 2;
+function drawReadinessGroup(doc: any, y: number, title: string, counts: CountTriple): number {
+  const width = pageW(doc);
+  doc.setFont("times", "bold");
+  doc.setFontSize(10.5);
+  doc.text(`${title} – Inspected – Findings`, MARGIN, y);
+  doc.setFont("times", "normal");
+  doc.setFontSize(8.5);
+  doc.text("(Number inspected, number assigned, number in reserve, list deficiencies)", MARGIN, y + 4.3);
+  const labelX = MARGIN + 12;
+  const valueX = MARGIN + 63;
+  const commentsX = MARGIN + 100;
+  y += 12;
+  doc.setFont("times", "bold");
+  doc.setFontSize(9.5);
+  [["Inspected:", counts.total], ["Number Assigned:", counts.assigned], ["Number in Reserve:", counts.reserve]].forEach(([label, value]) => {
+    doc.text(`•   ${label}`, labelX, y);
+    doc.setFont("times", "normal");
+    doc.text(String(value), valueX, y);
+    doc.setDrawColor(105);
+    doc.line(valueX - 3, y + 0.5, valueX + 13, y + 0.5);
+    doc.setFont("times", "bold");
+    y += 5.4;
+  });
+  doc.setFont("times", "bold");
+  doc.setFontSize(8.2);
+  doc.text("Comments:", commentsX, y - 16.2);
+  for (let i = 0; i < 3; i++) rowLine(doc, y - 12 + i * 8, "", commentsX, width - MARGIN);
+  return y + 2;
+}
+
+function drawAmmoGroup(doc: any, y: number, title: string, duty: number, practice: number): number {
+  const width = pageW(doc);
+  doc.setFont("times", "bold");
+  doc.setFontSize(10.5);
+  doc.text(title, MARGIN, y);
+  doc.setFontSize(8.5);
+  doc.text("Comments:", MARGIN + 76, y + 4);
+  doc.setFontSize(9.5);
+  doc.text("Duty:", MARGIN + 12, y + 12);
+  doc.text(String(duty), MARGIN + 43, y + 12);
+  doc.line(MARGIN + 40, y + 12.5, MARGIN + 54, y + 12.5);
+  doc.text("Practice:", MARGIN + 12, y + 18);
+  doc.text(String(practice), MARGIN + 43, y + 18);
+  doc.line(MARGIN + 40, y + 18.5, MARGIN + 54, y + 18.5);
+  rowLine(doc, y + 10, "", MARGIN + 76, width - MARGIN);
+  rowLine(doc, y + 17, "", MARGIN + 76, width - MARGIN);
+  return y + 29;
+}
+
+/** Training Division Operational Readiness Report (two-page paper form). */
+export function buildQuarterlyTemplateB(items: ItemWithStock[]) {
+  const period = currentReportingPeriod();
+  const doc = newDoc("portrait");
+  let y = drawReadinessHeader(doc, period);
+
+  OPERATIONAL_READINESS_WEAPON_GROUPS.forEach((group) => {
+    y = drawReadinessGroup(doc, y, group.title, groupCounts(items, group.itemNames));
+    y += 5;
+  });
+
+  doc.setFont("times", "bold");
+  doc.setFontSize(9.5);
+  doc.text("List deficiencies:", MARGIN, y);
+  y += 6;
+  for (let i = 0; i < 9; i++) {
+    y = rowLine(doc, y, "", MARGIN, pageW(doc) - MARGIN);
   }
 
-  const sup = suppressorCounts(items);
-  y = sectionTitle(doc, y + 1, "Suppressors");
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-  doc.text(`Inventoried: ${sup.inventoried}`, MARGIN, y);
-  doc.text(`Assigned: ${sup.assigned}`, MARGIN + 60, y);
-  y += LINE;
-  y = commentsLine(doc, y);
-  y += 6;
+  doc.addPage();
+  const width = pageW(doc);
+  y = 24;
+  doc.setFont("times", "bold");
+  doc.setFontSize(13);
+  doc.text("OPERATIONAL READINESS", width / 2, y, { align: "center" });
+  y += 17;
+  const ammo = [
+    { title: "9mm ammo inventory", caliber: /9mm/i },
+    { title: "5.56/.223 inventory", caliber: /5\.56|\.223/i },
+    { title: "12-gauge inventory", caliber: /12\s*ga|12-gauge/i },
+  ];
+  ammo.forEach((section) => {
+    y = drawAmmoGroup(
+      doc,
+      y,
+      section.title,
+      ammunitionQuantity(items, section.caliber, "duty"),
+      ammunitionQuantity(items, section.caliber, "practice"),
+    );
+  });
 
-  // Signature block
-  doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+  const suppressors = suppressorCounts(items);
+  doc.setFont("times", "bold");
+  doc.setFontSize(10.5);
+  doc.text("Suppressors", MARGIN, y);
+  doc.setFontSize(9.5);
+  doc.text("Inventoried:", MARGIN + 12, y + 12);
+  doc.text(String(suppressors.inventoried), MARGIN + 43, y + 12);
+  doc.line(MARGIN + 40, y + 12.5, MARGIN + 54, y + 12.5);
+  doc.text("Assigned:", MARGIN + 12, y + 18);
+  doc.text(String(suppressors.assigned), MARGIN + 43, y + 18);
+  doc.line(MARGIN + 40, y + 18.5, MARGIN + 54, y + 18.5);
+  doc.setFontSize(8.5);
+  doc.text("Comments:", MARGIN + 76, y + 4);
+  rowLine(doc, y + 10, "", MARGIN + 76, width - MARGIN);
+  rowLine(doc, y + 17, "", MARGIN + 76, width - MARGIN);
+  y += 49;
+
+  doc.setFont("times", "bold");
+  doc.setFontSize(9.5);
   doc.text("The above items have been inspected in the quarter indicated by:", MARGIN, y);
-  y += LINE + 6;
-  const half = (w - MARGIN * 2 - 10) / 2;
-  doc.setDrawColor(120);
-  doc.line(MARGIN, y, MARGIN + half, y);
-  doc.line(w - MARGIN - half, y, w - MARGIN, y);
-  y += 4; doc.setFont("helvetica", "normal");
-  doc.text("Signature", MARGIN, y); doc.text("Date", w - MARGIN - half, y);
-  y += 12;
-  doc.line(MARGIN, y, MARGIN + half, y);
-  y += 4; doc.text("Print Name", MARGIN, y);
-  y += 12;
-  doc.line(MARGIN, y, MARGIN + half, y);
-  doc.line(w - MARGIN - half, y, w - MARGIN, y);
-  y += 4;
-  doc.text("Training Commander Signature", MARGIN, y); doc.text("Date", w - MARGIN - half, y);
+  y += 14;
+  const leftEnd = MARGIN + 67;
+  const rightStart = width - MARGIN - 67;
+  doc.setDrawColor(105);
+  doc.line(MARGIN, y, leftEnd, y);
+  doc.line(rightStart, y, width - MARGIN, y);
+  doc.setFontSize(8.7);
+  doc.text("Signature", MARGIN + 2, y + 4.5);
+  doc.text("Date", rightStart + 2, y + 4.5);
+  y += 20;
+  doc.line(MARGIN, y, leftEnd, y);
+  doc.text("Print Name", MARGIN + 2, y + 4.5);
+  y += 20;
+  doc.line(MARGIN, y, leftEnd, y);
+  doc.line(rightStart, y, width - MARGIN, y);
+  doc.text("Training Commander Signature", MARGIN + 2, y + 4.5);
+  doc.text("Date", rightStart + 2, y + 4.5);
 
   reportFooter(doc);
   return doc;
 }
 
-function commentsLine(doc: any, y: number): number {
-  const w = pageW(doc);
-  doc.setFont("helvetica", "italic"); doc.setFontSize(8);
-  doc.text("Comments:", MARGIN, y);
-  doc.setDrawColor(150);
-  doc.line(MARGIN + 18, y + 0.5, w - MARGIN, y + 0.5);
-  doc.setFont("helvetica", "normal");
-  return y + LINE;
+export function downloadQuarterlyTemplateA(items: ItemWithStock[]) {
+  const { quarter, year } = currentReportingPeriod();
+  buildQuarterlyTemplateA(items).save(reportFilename(`Quarterly Inspection Checklist Q${quarter} ${year}`, "pdf"));
 }
 
-export function downloadQuarterlyTemplateB(items: ItemWithStock[], quarter: Quarter, year: number) {
-  buildQuarterlyTemplateB(items, quarter, year).save(reportFilename(`Operational Readiness Q${quarter} ${year}`, "pdf"));
+export function downloadQuarterlyTemplateB(items: ItemWithStock[]) {
+  const { quarter, year } = currentReportingPeriod();
+  buildQuarterlyTemplateB(items).save(reportFilename(`Operational Readiness Q${quarter} ${year}`, "pdf"));
 }
