@@ -2,13 +2,14 @@
 // CSV templates, and bulk-import validation.
 
 export const RANKS = [
+  "Cadet",
   "Officer",
+  "Detective",
   "Sergeant",
   "Lieutenant",
   "Captain",
+  "Major",
   "Chief",
-  "Detective",
-  "Cadet",
   "PST",
   "FST",
   "NTBS",
