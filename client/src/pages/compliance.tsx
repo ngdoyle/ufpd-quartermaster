@@ -30,9 +30,9 @@ const CONTROLS: Control[] = [
   { control: "Password hashing", detail: "bcrypt (cost factor 12); no plaintext or reversible credentials stored.", status: "MET" },
   { control: "Brute-force protection", detail: "Login attempts rate-limited via express-rate-limit on the auth route.", status: "MET" },
   { control: "Session timeout", detail: "30-minute inactivity timeout enforced server-side.", status: "MET" },
-  { control: "Audit logging", detail: "Append-only Activity Log records every transaction with user, action, and timestamp.", status: "MET" },
+  { control: "Audit logging", detail: "Append-only Activity Log records every transaction with user, action, and timestamp. Report generation (including the quarterly PDFs) is read-only and creates no data changes.", status: "MET" },
   { control: "Security headers", detail: "Helmet sets HSTS, frame, content-type, and referrer protections.", status: "MET" },
-  { control: "Role-based access control", detail: "Capability checks are enforced client- and server-side across three roles (Administrator, Quartermaster, Auditor). Quartermasters and Auditors have read access to the Activity Log.", status: "MET" },
+  { control: "Role-based access control", detail: "Exactly three roles — Administrator, Quartermaster, Auditor — with capability checks enforced client- and server-side. Writes require Administrator or Quartermaster; user management is Administrator-only; all three roles can read reports and the Activity Log.", status: "MET" },
   { control: "Password policy", detail: "Self-service password change for every account; admin-initiated reset issues a one-time temporary password (emailed, never stored in clear) and forces a change at next sign-in. All password material is bcrypt-hashed.", status: "MET" },
   { control: "Encryption at rest", detail: "Supabase-managed Postgres with AES-256 encryption at rest (provider-managed). Moves to UF-managed hosting per the migration plan below.", status: "MET" },
   { control: "Single sign-on readiness", detail: "Pluggable auth layer with AUTH_MODE switch; GatorLink / Shibboleth drops in without code changes. Live SP registration remaining.", status: "PARTIAL" },
@@ -40,7 +40,7 @@ const CONTROLS: Control[] = [
   { control: "TLS in transit", detail: "HTTPS enforced on the current published endpoint; equivalent TLS provided at the platform layer after migration to UF hosting.", status: "MET" },
 ];
 
-// Feature/change summary across the polish batches (through Jul 20, 2026).
+// Feature/change summary across the polish batches (through Sep 24, 2026).
 const BATCH_SUMMARY: { batch: string; items: string }[] = [
   { batch: "Batch 1", items: "Core hardening — bcrypt auth, rate-limited login, 30-minute session timeout, append-only audit log, security headers." },
   { batch: "Batch 2", items: "Issue/return receipts (PDF), dashboard alerts, expiration and low-stock tracking, reports." },
@@ -49,21 +49,27 @@ const BATCH_SUMMARY: { batch: string; items: string }[] = [
   { batch: "Batch 5", items: "User-account email addresses, self-service password change, and admin password reset with a forced change at next sign-in." },
   { batch: "Batch 6", items: "Standardized condition vocabulary, condition capture at issuance, required issuance fields (issued by, location, signature), and dated receipt filenames." },
   { batch: "Batch 7", items: "Dated report/CSV filenames, inspection printed-name blocks, low-stock reports scoped to user accounts, and a secured weekly low-stock email trigger for an external scheduler." },
+  { batch: "Batch 8", items: "Admin utility scripts (serial swap, password set, clean slate) ported to Supabase/PostgREST with --env targeting and pre-wipe JSON backups; IT handoff documentation refresh." },
+  { batch: "Batch 9", items: "Training Gear and Firearms Accessories categories, inventory column sorting, updated sworn rank order (Cadet, Officer, Detective, Sergeant, Lieutenant, Captain, Major, Chief), and conversion to a three-role model (Administrator, Quartermaster, Auditor)." },
+  { batch: "Batch 10", items: "Quarterly Critical Incident Equipment Inspection Checklist and Operational Readiness Report — read-only, client-generated PDFs from live inventory; no new API endpoints." },
+  { batch: "Batch 11", items: "Shotgun (Lethal) firearms subcategory alongside Shotgun (Less Lethal); documentation and this page brought current for IT submission." },
 ];
 
-// Roles and their capabilities (mirrors lib/app-context.ts `can`).
+// The application's three roles and their capabilities (mirrors lib/app-context.ts `can`).
 const ROLES: { role: string; caps: string }[] = [
-  { role: "Administrator", caps: "Full access — user accounts and password resets, inventory, issue/return, reports, email, and the Activity Log." },
-  { role: "Quartermaster", caps: "Inventory, personnel, issue/return, kits, reports, and outbound email. Read access to the Activity Log (audit)." },
-  { role: "Auditor", caps: "Read-only assurance — reports, the Activity Log, and this compliance view." },
+  { role: "Administrator", caps: "Full access — user accounts and password resets, inventory, personnel, issue/return, kits, reports (incl. quarterly PDFs), email, the Activity Log, and this compliance view." },
+  { role: "Quartermaster", caps: "Inventory, personnel, issue/return, kits, reports (incl. quarterly PDFs), and outbound email. Read access to the Activity Log (audit). No user management." },
+  { role: "Auditor", caps: "Read-only assurance — reports (incl. quarterly PDFs), the Activity Log, and this compliance view. No write access." },
 ];
 
-// Operational policies established across Batches 5–7.
+// Operational policies established across Batches 5–11.
 const OPS_POLICIES: { label: string; detail: string }[] = [
   { label: "Condition vocabulary", detail: "Seven standardized values — NEW, LIKE NEW, GOOD, FAIR, DAMAGED, MAINTENANCE, RETIRED — used everywhere condition is recorded, including capture at issuance." },
   { label: "Required issuance fields", detail: "Every issuance (cart and QR quick-issue) requires the issuing user, an issued location, and a recipient signature; enforced client- and server-side." },
   { label: "Receipt & report naming", detail: "Issuance receipts are named DATE_Items Issued_RECIPIENT; every generated report/CSV is named YYYY-MM-DD_Report Title (e.g. 2026-07-20_Inventory by Location.pdf)." },
   { label: "Low-stock reporting", detail: "Low-stock reports are emailed to user accounts (login accounts with an email on file) only. A secured endpoint lets an external scheduler send the weekly low-stock report to all quartermaster-role users automatically." },
+  { label: "Quarterly reports", detail: "The Quarterly Critical Incident Equipment Inspection Checklist and the Operational Readiness Report are generated in the browser (jsPDF) from live inventory at the moment of generation. They are read-only: no new API endpoints, no database writes, and nothing is stored server-side. Weapon-group membership for the readiness report is an editable name list in the client configuration." },
+  { label: "Inventory taxonomy", detail: "Categories and subcategories are a single controlled vocabulary (e.g. Firearms → Handgun, Rifle, Shotgun (Lethal), Shotgun (Less Lethal), …; Training Gear → VR Gear, Inert Weapons, Mats/Pads; Firearms Accessories → Attachments, Suppressors) used by the item form, filters, issue pickers, and reports." },
 ];
 
 // Email subsystem provider modes (#18).
@@ -129,7 +135,7 @@ export default function Compliance() {
     <div>
       <PageHeader
         title="Compliance & Security Posture"
-        subtitle="Classification, CJIS scoping, and control status for the UFIT information security review · Last updated 2026-07-20"
+        subtitle="Classification, CJIS scoping, and control status for the UFIT information security review · Last updated 2026-09-24"
       />
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -207,8 +213,8 @@ export default function Compliance() {
 
       <div className="mt-6 mb-3 flex items-center gap-2">
         <ListChecks className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-semibold tracking-tight">Feature summary — Batches 1–7</h3>
-        <span className="text-xs text-muted-foreground">as of Jul 20, 2026</span>
+        <h3 className="text-sm font-semibold tracking-tight">Feature summary — Batches 1–11</h3>
+        <span className="text-xs text-muted-foreground">as of Sep 24, 2026</span>
       </div>
       <Card className="overflow-hidden" data-testid="card-batch-summary">
         <ul className="divide-y divide-border">
