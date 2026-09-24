@@ -19,7 +19,7 @@ export const ITEM_CATEGORIES = [
 
 // Subcategory options per category.
 export const ITEM_SUBCATEGORIES: Record<string, readonly string[]> = {
-  "Firearms": ["Handgun", "Rifle", "Shotgun (Less Lethal)", "40mm Grenade Launcher (Less Lethal)", "Simunitions", "Sniper Rifle"],
+  "Firearms": ["Handgun", "Rifle", "Shotgun (Lethal)", "Shotgun (Less Lethal)", "40mm Grenade Launcher (Less Lethal)", "Simunitions", "Sniper Rifle"],
   "Firearms Accessories": ["Attachments", "Suppressors"],
   "Ammunition": ["Handgun", "Rifle", "Shotgun", "40mm Grenade Launcher (Less Lethal)", "Simunitions", "Sniper Rifle"],
   "Training Gear": ["VR Gear", "Inert Weapons", "Mats/Pads"],
